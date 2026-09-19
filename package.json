@@ -1,0 +1,31 @@
+{
+  "name": "pi-auto",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "tsc --noEmit",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1",
+    "tauri:build": "tauri build",
+    "tauri:build:mac": "tauri build --bundles app,dmg",
+    "version:check": "node scripts/sync-version.mjs --check",
+    "version:set": "node scripts/sync-version.mjs --set",
+    "release:tag": "node scripts/cut-release.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}

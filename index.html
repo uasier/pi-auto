@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="icon" href="/src/assets/app-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>终端自动应答</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="noise" aria-hidden="true"></div>
+
+    <div class="app rail-open" id="app">
+      <aside class="rail" id="rail">
+        <header class="brand">
+          <div class="brand-mark">
+            <img src="/src/assets/app-icon.png" class="brand-icon" alt="" />
+            <span class="spark" aria-hidden="true"></span>
+          </div>
+          <div>
+            <h1>自动应答</h1>
+            <p>空闲了，就把下一轮打进去</p>
+          </div>
+        </header>
+        <div class="rail-head">
+          <span>会话</span>
+          <button type="button" id="refresh-btn" class="ghost icon-btn" title="刷新">
+            <span class="refresh-glyph">↻</span>
+            刷新
+          </button>
+        </div>
+        <div id="herdr-banner" class="herdr-banner off">
+          <span id="herdr-banner-text">Herdr 未连接</span>
+          <button type="button" id="herdr-guide-btn" class="ghost">安装引导</button>
+        </div>
+        <div id="sheet-bar" class="sheet-bar"></div>
+        <div id="session-list" class="session-list">
+          <div class="empty boot">等待 Herdr 连接…</div>
+        </div>
+      </aside>
+
+      <section class="stage">
+        <div id="update-banner" class="update-banner hidden">
+          <span id="update-banner-text">发现新版本</span>
+          <button type="button" id="update-banner-open">查看</button>
+          <button type="button" id="update-banner-skip" class="ghost">忽略</button>
+        </div>
+        <header class="main-head">
+          <div class="title-block">
+            <div class="kicker" id="target-kicker">等待选择</div>
+            <div id="target-title" class="target-title">未选择 Herdr pane</div>
+            <div id="target-meta" class="target-meta">上为终端，下为输入</div>
+          </div>
+          <div class="head-tools">
+            <div id="status-pill" class="pill idle-unknown">
+              <span class="pill-dot"></span>
+              <span id="status-text">待选择</span>
+            </div>
+            <button type="button" id="toggle-rail" class="ghost">会话</button>
+            <button type="button" id="toggle-plan" class="ghost">计划 <span id="queue-count" class="count-badge">0</span></button>
+            <button type="button" id="toggle-help" class="ghost">说明</button>
+            <button type="button" id="app-version" class="ghost version-btn" title="关于与更新">v0.1.0</button>
+          </div>
+        </header>
+
+        <div class="panel preview-panel">
+          <div class="term-chrome">
+            <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="term-title">实时画面</span>
+            <span id="preview-hint" class="term-hint"></span>
+            <span id="live-badge" class="live-badge">待机</span>
+          </div>
+          <div class="preview-stage">
+            <img id="preview-image" class="preview-image hidden" alt="终端画面" />
+            <div id="term-host" class="term-host hidden"></div>
+            <pre id="preview" class="preview hidden"></pre>
+            <div id="preview-empty" class="preview-empty">
+              <img src="/src/assets/app-icon.png" alt="" />
+              <strong>先选一个 Herdr pane</strong>
+              <span>点「会话」选择 pane，在下方输入任务</span>
+            </div>
+            <div class="scanlines" aria-hidden="true"></div>
+          </div>
+        </div>
+
+        <div class="panel composer">
+          <textarea
+            id="task-input"
+            placeholder="写给当前 Agent 的话。⌘ / Ctrl + Enter 发送。"
+          ></textarea>
+          <div class="composer-bar">
+            <span class="grow"></span>
+            <button type="button" id="send-btn" class="primary" disabled>发送</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="drawer" id="plan-drawer">
+        <div class="panel run-card">
+          <div class="panel-title">循环控制</div>
+          <div class="loop-meter">
+            <div id="loop-bar" class="loop-bar"><i id="loop-bar-fill"></i></div>
+            <span id="loop-status" class="loop-status">尚未开始</span>
+          </div>
+          <div class="run-actions">
+            <button type="button" id="start-loop" class="primary">开始循环</button>
+            <button type="button" id="pause-loop" disabled>暂停</button>
+            <button type="button" id="stop-loop" disabled>停止</button>
+          </div>
+          <div class="run-opts">
+            <label class="chip-field">
+              整表
+              <input type="number" id="loop-rounds" min="1" max="99" value="1" />
+              次
+            </label>
+            <label class="chip-field">
+              稳定
+              <input type="number" id="idle-ms" min="1" max="30" value="2" />
+              秒
+            </label>
+            <label class="chip-field">
+              压缩 ≥
+              <input type="number" id="compact-at" min="10" max="95" value="70" />
+              %
+            </label>
+          </div>
+        </div>
+        <div class="panel plan-panel">
+          <div class="panel-title">
+            任务计划
+            <span class="plan-tools">
+              <button type="button" id="queue-btn" class="primary" disabled>加入计划</button>
+              <button type="button" id="import-btn">导入</button>
+            </span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="commit-after" checked />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span>完成后提交代码</span>
+          </label>
+          <ol id="queue-list" class="queue-list">
+            <li class="empty">还没有任务。点「加入计划」或「导入」。</li>
+          </ol>
+        </div>
+        <div class="panel log-panel">
+          <div class="panel-title">日志</div>
+          <div id="log" class="log"></div>
+        </div>
+      </aside>
+    </div>
+
+    <div id="herdr-guide" class="guide hidden" role="dialog">
+      <div class="guide-card">
+        <img src="/src/assets/app-icon.png" class="guide-icon" alt="" />
+        <h2>安装并启动 Herdr</h2>
+        <p class="guide-lead">本工具只连接 Herdr pane。请先安装 Herdr，再在 pane 里打开 Pi / Claude / Codex / Grok。</p>
+        <div class="perm-item">
+          <div class="perm-top">
+            <h3>1. 安装 Herdr</h3>
+            <span class="perm-flag">macOS / Linux</span>
+          </div>
+          <p>在终端执行官方安装脚本：</p>
+          <pre class="cmd" id="herdr-install-cmd">curl -fsSL https://herdr.dev/install.sh | sh</pre>
+          <button type="button" id="copy-herdr-install">复制安装命令</button>
+        </div>
+        <div class="perm-item">
+          <h3>2. 启动并打开 Agent</h3>
+          <ol>
+            <li>终端执行 <code>herdr</code>，或打开 Pi Agent Desktop</li>
+            <li>在 pane 里启动 <code>pi</code> / <code>claude</code> / <code>codex</code> / <code>grok</code></li>
+            <li>回到本应用，点「重新检测」</li>
+          </ol>
+        </div>
+        <div class="perm-item">
+          <h3>3. 确认已连接</h3>
+          <p>左侧横幅变成「Herdr 已连接」，会话列表会出现 pane。普通 VS Code / Terminal.app 里的 CLI 无法接入。</p>
+        </div>
+        <div class="guide-actions">
+          <button type="button" id="herdr-recheck" class="primary">重新检测</button>
+          <button type="button" id="herdr-docs">安装文档</button>
+          <button type="button" id="herdr-guide-close">稍后</button>
+        </div>
+      </div>
+    </div>
+    <div id="usage-guide" class="guide hidden" role="dialog">
+      <div class="guide-card">
+        <img src="/src/assets/app-icon.png" class="guide-icon" alt="" />
+        <h2>怎么用</h2>
+        <p class="guide-lead">上边看终端，下边写话。计划、循环、提交都收在右侧抽屉里。</p>
+        <div class="how-list">
+          <div class="how-item">
+            <span>1</span>
+            <div>
+              <strong>选会话</strong>
+              <p>点「会话」，选一个 Herdr pane。必须是 Herdr 里开的 Pi / Claude / Codex / Grok。</p>
+            </div>
+          </div>
+          <div class="how-item">
+            <span>2</span>
+            <div>
+              <strong>直接发一句话</strong>
+              <p>下方输入框写内容，点右下角「发送」，或 ⌘ / Ctrl + Enter。</p>
+            </div>
+          </div>
+          <div class="how-item">
+            <span>3</span>
+            <div>
+              <strong>排任务计划</strong>
+              <p>点「计划」→「加入计划」或「导入」。需要提交代码就勾上「完成后提交」。</p>
+            </div>
+          </div>
+          <div class="how-item">
+            <span>4</span>
+            <div>
+              <strong>开始循环</strong>
+              <p>点「开始循环」：空闲后自动下一条。做完可单独再走一轮提交；上下文超过阈值会先压缩。</p>
+            </div>
+          </div>
+        </div>
+        <div class="guide-actions">
+          <button type="button" id="usage-start" class="primary">开始使用</button>
+          <button type="button" id="usage-install">还没装 Herdr</button>
+        </div>
+      </div>
+    </div>
+    <div id="about-modal" class="guide hidden" role="dialog">
+      <div class="guide-card">
+        <img src="/src/assets/app-icon.png" class="guide-icon" alt="" />
+        <h2>关于与更新</h2>
+        <p class="guide-lead">安装包由 GitHub Releases 发布。启动后会定期检查最新 tag，也可在此手动检查并下载。</p>
+        <div class="about-grid">
+          <div>
+            <span class="muted">当前版本</span>
+            <strong id="about-current">v0.1.0</strong>
+          </div>
+          <div>
+            <span class="muted">最新版本</span>
+            <strong id="about-latest">尚未检查</strong>
+          </div>
+          <div>
+            <span class="muted">状态</span>
+            <strong id="about-status">—</strong>
+          </div>
+        </div>
+        <p id="about-error" class="about-error hidden"></p>
+        <p id="about-asset" class="guide-lead hidden"></p>
+        <pre id="about-notes" class="update-notes hidden"></pre>
+        <div class="guide-actions">
+          <button type="button" id="check-update">检查更新</button>
+          <button type="button" id="open-release">打开发布页</button>
+          <button type="button" id="install-update" class="primary" disabled>下载安装包</button>
+        </div>
+        <div class="guide-actions">
+          <button type="button" id="about-close">关闭</button>
+        </div>
+      </div>
+    </div>
+    <input id="import-file" type="file" accept=".txt,.md,.json,.csv,.text" hidden />
+    <div id="import-modal" class="guide hidden" role="dialog">
+      <div class="guide-card">
+        <h2>导入任务列表</h2>
+        <p class="guide-lead">支持 JSON 数组、Markdown 列表、纯文本（一行一条，或空行分段）。导入后会按开关自动附上「完成后提交代码」。</p>
+        <div class="actions" style="margin: 0 0 10px">
+          <button type="button" id="import-pick">从文件选择</button>
+        </div>
+        <textarea id="import-raw" placeholder="1. 实现登录&#10;2. 补测试&#10;3. 修列表筛选"></textarea>
+        <label class="toggle import-commit">
+          <input type="checkbox" id="import-commit" checked />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span>每条任务完成后提交代码</span>
+        </label>
+        <div id="import-preview" class="import-preview"></div>
+        <div class="guide-actions">
+          <button type="button" id="import-confirm" class="primary">加入计划</button>
+          <button type="button" id="import-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>需要控制「终端」窗口，以检测 pi 是否空闲并发送下一轮任务。</string>
+  <key>NSAppleScriptEnabled</key>
+  <true/>
+</dict>
+</plist>
