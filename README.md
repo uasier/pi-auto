@@ -31,10 +31,10 @@ npm run tauri dev
 打包：
 
 ```bash
-npm run tauri build
-# 或
 npm run tauri:build:mac
 ```
+
+产物会复制到仓库根目录的 [`release/`](./release/)（`.dmg` 与 `.app`），方便直接取用。
 
 ## 发布
 

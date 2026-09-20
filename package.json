@@ -12,7 +12,8 @@
     "test": "tsc --noEmit",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1",
     "tauri:build": "tauri build",
-    "tauri:build:mac": "tauri build --bundles app,dmg",
+    "tauri:build:mac": "tauri build --bundles app,dmg && node scripts/copy-release.mjs",
+    "copy:release": "node scripts/copy-release.mjs",
     "version:check": "node scripts/sync-version.mjs --check",
     "version:set": "node scripts/sync-version.mjs --set",
     "release:tag": "node scripts/cut-release.mjs"
