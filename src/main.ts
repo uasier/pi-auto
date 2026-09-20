@@ -28,6 +28,21 @@ type TaskItem = {
   status: TaskStatus;
 };
 type Phase = "idle" | "sent" | "working" | "settling";
+type Plan = {
+  tasks: TaskItem[];
+  template: Array<Pick<TaskItem, "title" | "text" | "commit">>;
+  currentRound: number;
+  phase: Phase;
+  idleSince: number | null;
+  sentAt: number | null;
+  planRunning: boolean;
+  compacting: boolean;
+  needCompact: boolean;
+  loopRounds: number;
+  idleMs: number;
+  compactAt: number;
+  commitAfter: boolean;
+};
 type HerdrStatus = {
   connected: boolean;
   endpoint: string | null;
@@ -79,12 +94,7 @@ function commitPrompt(task: TaskItem) {
 
 let sessions: AgentSession[] = [];
 let selectedId: string | null = null;
-let tasks: TaskItem[] = [];
-let template: Array<Pick<TaskItem, "title" | "text" | "commit">> = [];
-let currentRound = 1;
-let phase: Phase = "idle";
-let idleSince: number | null = null;
-let sentAt: number | null = null;
+const plans = new Map<string, Plan>();
 let pollTimer: number | null = null;
 let activeSheet: (typeof AGENT_ORDER)[number] = "pi";
 let importDraft: string[] = [];
@@ -102,9 +112,6 @@ const USAGE_SEEN_KEY = "pi-auto-usage-seen";
 const SKIP_VERSION_KEY = "pi-auto-skip-version";
 const UPDATE_CHECKED_KEY = "pi-auto-update-checked-at";
 const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
-let planRunning = false;
-let compacting = false;
-let needCompact = true;
 let appInfo: AppInfo | null = null;
 let updateInfo: UpdateCheck | null = null;
 let updateChecking = false;
@@ -130,11 +137,71 @@ function log(message: string, err = false) {
   }
 }
 
+function emptyPlan(): Plan {
+  return {
+    tasks: [],
+    template: [],
+    currentRound: 1,
+    phase: "idle",
+    idleSince: null,
+    sentAt: null,
+    planRunning: false,
+    compacting: false,
+    needCompact: true,
+    loopRounds: 1,
+    idleMs: 2,
+    compactAt: 70,
+    commitAfter: true,
+  };
+}
+
+function getPlan(id: string): Plan {
+  let plan = plans.get(id);
+  if (!plan) {
+    plan = emptyPlan();
+    plans.set(id, plan);
+  }
+  return plan;
+}
+
+function activePlan(): Plan | null {
+  return selectedId ? getPlan(selectedId) : null;
+}
+
+function syncPlanInputsFromUi() {
+  const plan = selectedId ? plans.get(selectedId) : null;
+  if (!plan) return;
+  plan.loopRounds = Math.max(1, Number(loopRoundsInput().value) || 1);
+  plan.idleMs = Math.max(1, Number(idleMsInput().value) || 2);
+  plan.compactAt = Math.max(10, Math.min(95, Number(compactAtInput().value) || 70));
+  plan.commitAfter = commitAfterInput().checked;
+}
+
+function applyPlanInputsToUi() {
+  const plan = activePlan();
+  if (!plan) return;
+  loopRoundsInput().value = String(plan.loopRounds);
+  idleMsInput().value = String(plan.idleMs);
+  compactAtInput().value = String(plan.compactAt);
+  commitAfterInput().checked = plan.commitAfter;
+}
+
+function selectSession(id: string | null) {
+  syncPlanInputsFromUi();
+  selectedId = id;
+  applyPlanInputsToUi();
+  lastQueueSig = "";
+  lastHeadSig = "";
+  lastListSig = "";
+  lastTermText = "";
+  renderAll();
+}
+
 function setAppTheme(agent?: string) {
   const app = $("app");
   if (agent) app.dataset.agent = agent;
   else delete app.dataset.agent;
-  app.classList.toggle("is-auto", planRunning);
+  app.classList.toggle("is-auto", !!activePlan()?.planRunning);
   const color =
     agent === "pi"
       ? "#b794f6"
@@ -196,7 +263,8 @@ function parseContextPercent(preview: string): number | null {
   return null;
 }
 
-function compactThreshold() {
+function compactThreshold(plan?: Plan) {
+  if (plan) return Math.max(10, Math.min(95, plan.compactAt || 70));
   return Math.max(10, Math.min(95, Number(compactAtInput().value) || 70));
 }
 
@@ -207,7 +275,8 @@ function compactCommand(agent: string) {
   return "/compact";
 }
 
-function loopRounds() {
+function loopRounds(plan?: Plan) {
+  if (plan) return Math.max(1, Math.min(99, plan.loopRounds || 1));
   return Math.max(1, Math.min(99, Number(loopRoundsInput().value) || 1));
 }
 
@@ -237,27 +306,27 @@ function makeTask(text: string, commit: boolean): TaskItem {
   };
 }
 
-function snapshotTemplate() {
-  template = tasks.map((t) => ({
+function snapshotTemplate(plan: Plan) {
+  plan.template = plan.tasks.map((t) => ({
     title: t.title,
     text: t.text,
     commit: t.commit,
   }));
 }
 
-function counts() {
+function counts(plan: Plan) {
   return {
-    total: tasks.length,
-    pending: tasks.filter((t) => t.status === "pending").length,
-    running: tasks.filter((t) => t.status === "running" || t.status === "committing").length,
-    done: tasks.filter((t) => t.status === "done").length,
+    total: plan.tasks.length,
+    pending: plan.tasks.filter((t) => t.status === "pending").length,
+    running: plan.tasks.filter((t) => t.status === "running" || t.status === "committing").length,
+    done: plan.tasks.filter((t) => t.status === "done").length,
   };
 }
 
-function currentTask() {
+function currentTask(plan: Plan) {
   return (
-    tasks.find((t) => t.status === "running" || t.status === "committing") ??
-    tasks.find((t) => t.status === "pending")
+    plan.tasks.find((t) => t.status === "running" || t.status === "committing") ??
+    plan.tasks.find((t) => t.status === "pending")
   );
 }
 
@@ -306,22 +375,33 @@ function parseTaskList(raw: string): string[] {
 }
 
 function renderLoopStatus() {
-  const totalRounds = loopRounds();
-  const { total, pending, running, done } = counts();
+  const plan = activePlan();
+  const bound = $("plan-bound");
+  if (bound) {
+    const session = selected();
+    bound.textContent = session ? `绑定 ${session.paneId}` : "未绑定窗口";
+  }
+  if (!plan) {
+    $("loop-bar-fill").style.width = "0%";
+    $("loop-status").textContent = "先选一个会话，计划会绑到该窗口";
+    return;
+  }
+  const totalRounds = loopRounds(plan);
+  const { total, pending, running, done } = counts(plan);
   const fill = $("loop-bar-fill");
   const all = Math.max(1, total * totalRounds);
-  const finished = (currentRound - 1) * total + done;
+  const finished = (plan.currentRound - 1) * total + done;
   const pct = Math.max(0, Math.min(100, Math.round((finished / all) * 100)));
   fill.style.width = `${pct}%`;
-  if (!planRunning) {
+  if (!plan.planRunning) {
     $("loop-status").textContent = total
       ? `待命 · ${total} 条任务 × ${totalRounds} 次 · 进度 ${pct}%`
       : "尚未开始";
     return;
   }
-  const cur = currentTask();
-  const committing = tasks.some((t) => t.status === "committing");
-  const now = compacting
+  const cur = currentTask(plan);
+  const committing = plan.tasks.some((t) => t.status === "committing");
+  const now = plan.compacting
     ? "压缩上下文"
     : committing
       ? "提交中"
@@ -331,7 +411,7 @@ function renderLoopStatus() {
           ? "等待空闲"
           : "本轮收尾";
   $("loop-status").textContent =
-    `第 ${currentRound}/${totalRounds} 次 · ${done}/${total} 完成 · ${now}` +
+    `第 ${plan.currentRound}/${totalRounds} 次 · ${done}/${total} 完成 · ${now}` +
     (cur ? ` · ${cur.title}` : "");
 }
 
@@ -348,11 +428,21 @@ function groupedSessions() {
 }
 
 function listSig() {
-  return `${activeSheet}|${selectedId}|` + sessions.map((s) => `${s.id}:${s.idle}:${s.agentState}`).join(";");
+  return (
+    `${activeSheet}|${selectedId}|` +
+    sessions
+      .map((s) => {
+        const plan = plans.get(s.id);
+        return `${s.id}:${s.idle}:${s.agentState}:${plan?.planRunning ? 1 : 0}:${plan?.tasks.length ?? 0}`;
+      })
+      .join(";")
+  );
 }
 
 function queueSig() {
-  return `${currentRound}|${planRunning}|` + tasks.map((t) => `${t.id}:${t.status}`).join(";");
+  const plan = activePlan();
+  if (!plan) return `${selectedId}|empty`;
+  return `${selectedId}|${plan.currentRound}|${plan.planRunning}|` + plan.tasks.map((t) => `${t.id}:${t.status}:${t.commit}`).join(";");
 }
 
 function renderList(force = false) {
@@ -393,6 +483,10 @@ function renderList(force = false) {
     .map((s) => {
       const active = s.id === selectedId ? " active" : "";
       const st = statusLabel(s);
+      const plan = plans.get(s.id);
+      const planHint = plan && plan.tasks.length
+        ? `<div class="plan-bind${plan.planRunning ? " on" : ""}">${plan.planRunning ? "循环中" : "计划"} ${plan.tasks.filter((t) => t.status === "done").length}/${plan.tasks.length}</div>`
+        : "";
       const title = s.title?.trim()
         ? `<div class="win">${escapeHtml(s.title)}</div>`
         : "";
@@ -404,16 +498,14 @@ function renderList(force = false) {
         <div class="tty">${escapeHtml(s.paneId)} · ${escapeHtml(s.agentState)}${s.interactiveReady ? " · 可交互" : ""}</div>
         <div class="cwd">${escapeHtml(shortPath(s.cwd))}</div>
         ${title}
+        ${planHint}
         <div class="why">${escapeHtml(s.reason)}</div>
       </button>`;
     })
     .join("");
   box.querySelectorAll<HTMLButtonElement>(".session").forEach((btn) => {
     btn.addEventListener("click", () => {
-      selectedId = btn.dataset.id ?? null;
-      idleSince = null;
-      phase = selected()?.idle ? "idle" : "working";
-      renderAll();
+      selectSession(btn.dataset.id ?? null);
       void poll();
     });
   });
@@ -427,16 +519,22 @@ function renderQueue(force = false) {
     return;
   }
   lastQueueSig = sig;
-  const { total } = counts();
+  const plan = activePlan();
+  const { total } = plan ? counts(plan) : { total: 0 };
   $("queue-count").textContent = String(total);
   const list = $("queue-list");
-  if (tasks.length === 0) {
-    list.innerHTML = `<li class="empty">还没有任务。导入列表或写入后加入计划。</li>`;
+  if (!plan) {
+    list.innerHTML = `<li class="empty">先选一个会话，计划会绑到该窗口。</li>`;
     renderLoopStatus();
     return;
   }
-  const running = planRunning;
-  list.innerHTML = tasks
+  if (plan.tasks.length === 0) {
+    list.innerHTML = `<li class="empty">这个窗口还没有任务。加入计划或导入。</li>`;
+    renderLoopStatus();
+    return;
+  }
+  const running = plan.planRunning;
+  list.innerHTML = plan.tasks
     .map((item, i) => {
       const mark =
         item.status === "done"
@@ -473,14 +571,14 @@ function renderQueue(force = false) {
       const id = btn.getAttribute("data-id");
       const act = btn.getAttribute("data-act");
       if (act === "commit") {
-        const task = tasks.find((t) => t.id === id);
+        const task = plan.tasks.find((t) => t.id === id);
         if (task && task.status === "pending") {
           task.commit = !task.commit;
-          if (!planRunning) snapshotTemplate();
+          if (!plan.planRunning) snapshotTemplate(plan);
         }
       } else {
-        tasks = tasks.filter((t) => t.id !== id);
-        if (!planRunning) snapshotTemplate();
+        plan.tasks = plan.tasks.filter((t) => t.id !== id);
+        if (!plan.planRunning) snapshotTemplate(plan);
       }
       lastQueueSig = "";
       renderQueue(true);
@@ -593,7 +691,7 @@ function renderMain() {
     const ctxLabel = ctx == null ? session.agentState : `${session.agentState}  ·  上下文 ${ctx.toFixed(0)}%`;
     $("target-title").textContent = `${session.paneId}  ·  ${ctxLabel}`;
     $("status-text").textContent =
-      compacting ? "压缩中" : ctx != null && ctx >= compactThreshold() ? `${st.text} · ${ctx.toFixed(0)}%` : st.text;
+      activePlan()?.compacting ? "压缩中" : ctx != null && ctx >= compactThreshold() ? `${st.text} · ${ctx.toFixed(0)}%` : st.text;
     $("target-meta").textContent = `${shortPath(session.cwd)}  ·  ${session.reason}`;
     live.textContent = session.idle ? "IDLE" : "WORKING";
     live.className = `live-badge ${session.idle ? "on" : "busy"}`;
@@ -619,15 +717,19 @@ function renderAll() {
 function enqueue() {
   const text = taskInput().value.trim();
   if (!text) return;
-  if (!selected()) {
+  const session = selected();
+  const plan = activePlan();
+  if (!session || !plan) {
     log("请先选择一个 Herdr pane", true);
     return;
   }
-  tasks.push(makeTask(text, commitAfterInput().checked));
-  if (!planRunning) snapshotTemplate();
+  syncPlanInputsFromUi();
+  plan.tasks.push(makeTask(text, plan.commitAfter));
+  if (!plan.planRunning) snapshotTemplate(plan);
   taskInput().value = "";
+  lastQueueSig = "";
   renderQueue();
-  log(`已加入计划：${taskTitle(text)}`);
+  log(`已加入 ${session.paneId} 的计划：${taskTitle(text)}`);
 }
 
 function showImport(raw = "") {
@@ -665,35 +767,51 @@ function confirmImport() {
     log("没有可导入的任务", true);
     return;
   }
+  const plan = activePlan();
+  const session = selected();
+  if (!plan || !session) {
+    log("请先选择一个 Herdr pane", true);
+    return;
+  }
   const commit = $<HTMLInputElement>("import-commit").checked;
   for (const text of importDraft) {
-    tasks.push(makeTask(text, commit));
+    plan.tasks.push(makeTask(text, commit));
   }
-  if (!planRunning) snapshotTemplate();
+  if (!plan.planRunning) snapshotTemplate(plan);
+  lastQueueSig = "";
   renderQueue();
-  log(`已导入 ${importDraft.length} 条任务${commit ? "（含完成后提交代码）" : ""}`);
+  log(`已导入 ${importDraft.length} 条到 ${session.paneId}${commit ? "（含完成后提交代码）" : ""}`);
   hideImport();
 }
 
-async function sendNow(text: string, force: boolean) {
-  const session = selected();
-  if (!session) throw new Error("未选择会话");
+async function sendNow(session: AgentSession, plan: Plan | null, text: string, force: boolean) {
   const result = await invoke<string>("send_to_session", {
     id: session.id,
     text,
     force,
   });
-  log(result);
-  phase = "sent";
-  sentAt = Date.now();
-  idleSince = null;
+  log(`${session.paneId} · ${result}`);
+  if (plan) {
+    plan.phase = "sent";
+    plan.sentAt = Date.now();
+    plan.idleSince = null;
+  }
 }
 
 function syncRunButtons() {
-  $("start-loop").toggleAttribute("disabled", planRunning);
-  $("pause-loop").toggleAttribute("disabled", !planRunning);
-  $("stop-loop").toggleAttribute("disabled", !planRunning && currentRound === 1 && !tasks.some((t) => t.status !== "pending"));
-  $("start-loop").textContent = planRunning ? "循环中…" : tasks.some((t) => t.status === "done") ? "继续循环" : "开始循环";
+  const plan = activePlan();
+  const running = !!plan?.planRunning;
+  $("start-loop").toggleAttribute("disabled", running || !plan);
+  $("pause-loop").toggleAttribute("disabled", !running);
+  $("stop-loop").toggleAttribute(
+    "disabled",
+    !plan || (!running && plan.currentRound === 1 && !plan.tasks.some((t) => t.status !== "pending")),
+  );
+  $("start-loop").textContent = running
+    ? "循环中…"
+    : plan?.tasks.some((t) => t.status === "done")
+      ? "继续循环"
+      : "开始循环";
   const planBtn = $("toggle-plan");
   if (planBtn) planBtn.classList.toggle("on", document.getElementById("app")?.classList.contains("plan-open") ?? false);
   const railBtn = $("toggle-rail");
@@ -701,43 +819,47 @@ function syncRunButtons() {
 }
 
 function startLoop() {
-  if (planRunning) return;
-  if (tasks.length === 0) {
-    log("请先加入或导入任务再开始循环", true);
-    return;
-  }
-  if (!selected()) {
+  const session = selected();
+  const plan = activePlan();
+  if (!session || !plan) {
     log("请先选择一个 Herdr pane", true);
     return;
   }
-  snapshotTemplate();
-  const allDone = tasks.length > 0 && tasks.every((t) => t.status === "done");
+  if (plan.planRunning) return;
+  if (plan.tasks.length === 0) {
+    log("请先加入或导入任务再开始循环", true);
+    return;
+  }
+  syncPlanInputsFromUi();
+  snapshotTemplate(plan);
+  const allDone = plan.tasks.every((t) => t.status === "done");
   if (allDone) {
-    currentRound = 1;
-    for (const task of tasks) task.status = "pending";
+    plan.currentRound = 1;
+    for (const task of plan.tasks) task.status = "pending";
   }
-  const running = tasks.find((t) => t.status === "running");
+  const running = plan.tasks.find((t) => t.status === "running" || t.status === "committing");
   if (!running) {
-    phase = "idle";
-    idleSince = null;
-    sentAt = null;
+    plan.phase = "idle";
+    plan.idleSince = null;
+    plan.sentAt = null;
   }
-  planRunning = true;
-  compacting = false;
-  needCompact = true;
+  plan.planRunning = true;
+  plan.compacting = false;
+  plan.needCompact = true;
   lastQueueSig = "";
-  log(`开始循环：${tasks.length} 条 × ${loopRounds()} 次`);
-  setAppTheme(selected()?.agent);
+  log(`${session.paneId} 开始循环：${plan.tasks.length} 条 × ${loopRounds(plan)} 次`);
+  setAppTheme(session.agent);
   syncRunButtons();
   renderQueue(true);
   void maybeAutoSend();
 }
 
 function pauseLoop() {
-  if (!planRunning) return;
-  planRunning = false;
-  compacting = false;
-  log("已暂停循环");
+  const plan = activePlan();
+  if (!plan?.planRunning) return;
+  plan.planRunning = false;
+  plan.compacting = false;
+  log(`${selected()?.paneId ?? "当前窗口"} 已暂停循环`);
   setAppTheme(selected()?.agent);
   syncRunButtons();
   lastQueueSig = "";
@@ -745,51 +867,55 @@ function pauseLoop() {
 }
 
 function stopLoop() {
-  planRunning = false;
-  compacting = false;
-  needCompact = true;
-  currentRound = 1;
-  phase = "idle";
-  idleSince = null;
-  sentAt = null;
-  for (const task of tasks) task.status = "pending";
-  log("已停止循环，进度已清零");
+  const plan = activePlan();
+  if (!plan) return;
+  plan.planRunning = false;
+  plan.compacting = false;
+  plan.needCompact = true;
+  plan.currentRound = 1;
+  plan.phase = "idle";
+  plan.idleSince = null;
+  plan.sentAt = null;
+  for (const task of plan.tasks) task.status = "pending";
+  log(`${selected()?.paneId ?? "当前窗口"} 已停止循环，进度已清零`);
   setAppTheme(selected()?.agent);
   syncRunButtons();
   lastQueueSig = "";
   renderQueue(true);
 }
 
-function finishPlan() {
-  planRunning = false;
-  currentRound = 1;
-  phase = "idle";
-  setAppTheme(selected()?.agent);
-  syncRunButtons();
-  lastQueueSig = "";
-  renderQueue(true);
-  log("计划已全部完成");
+function finishPlan(session: AgentSession, plan: Plan) {
+  plan.planRunning = false;
+  plan.currentRound = 1;
+  plan.phase = "idle";
+  log(`${session.paneId} 计划已全部完成`);
+  if (session.id === selectedId) {
+    setAppTheme(session.agent);
+    syncRunButtons();
+    lastQueueSig = "";
+    renderQueue(true);
+  }
 }
 
-function startNextRound() {
-  const total = loopRounds();
-  if (currentRound >= total) {
-    finishPlan();
+function startNextRound(session: AgentSession, plan: Plan) {
+  const total = loopRounds(plan);
+  if (plan.currentRound >= total) {
+    finishPlan(session, plan);
     return false;
   }
-  currentRound += 1;
-  tasks = template.map((item) => ({
+  plan.currentRound += 1;
+  plan.tasks = plan.template.map((item) => ({
     id: newId(),
     title: item.title,
     text: item.text,
     commit: item.commit,
-    status: "pending",
+    status: "pending" as TaskStatus,
   }));
-  phase = "idle";
-  idleSince = null;
-  log(`开始第 ${currentRound}/${total} 次循环`);
-  renderQueue();
-  return tasks.length > 0;
+  plan.phase = "idle";
+  plan.idleSince = null;
+  log(`${session.paneId} 开始第 ${plan.currentRound}/${total} 次循环`);
+  if (session.id === selectedId) renderQueue();
+  return plan.tasks.length > 0;
 }
 
 function showHerdrGuide() {
@@ -956,15 +1082,24 @@ async function refreshHerdrStatus() {
   }
 }
 
+function refreshSelectedPlan() {
+  if (selectedId) {
+    lastQueueSig = "";
+    lastListSig = "";
+    syncRunButtons();
+    renderList();
+    renderQueue();
+  }
+}
+
 async function poll() {
   try {
     sessions = await invoke<AgentSession[]>("list_sessions", {
       previewId: selectedId,
     });
     if (selectedId && !sessions.some((s) => s.id === selectedId)) {
-      log(`会话 ${selectedId} 已退出`, true);
-      selectedId = null;
-      phase = "idle";
+      log(`会话 ${selectedId} 已退出，计划仍保留`, true);
+      selectSession(null);
     }
     void refreshHerdrStatus();
     renderList();
@@ -976,129 +1111,131 @@ async function poll() {
   }
 }
 
-function completeRunning(running: TaskItem) {
+function completeRunning(session: AgentSession, plan: Plan, running: TaskItem) {
   running.status = "done";
-  phase = "idle";
-  idleSince = Date.now();
-  sentAt = null;
-  lastQueueSig = "";
-  needCompact = true;
-  log(`完成：${running.title}`);
+  plan.phase = "idle";
+  plan.idleSince = Date.now();
+  plan.sentAt = null;
+  plan.needCompact = true;
+  log(`${session.paneId} 完成：${running.title}`);
+  if (session.id === selectedId) refreshSelectedPlan();
 }
 
-async function startCommit(task: TaskItem) {
+async function startCommit(session: AgentSession, plan: Plan, task: TaskItem) {
   task.status = "committing";
-  lastQueueSig = "";
-  renderQueue(true);
-  log(`开始提交：${task.title}`);
-  await sendNow(commitPrompt(task), false);
-  phase = "sent";
+  log(`${session.paneId} 开始提交：${task.title}`);
+  if (session.id === selectedId) refreshSelectedPlan();
+  await sendNow(session, plan, commitPrompt(task), false);
 }
 
-async function startCompact(session: AgentSession) {
-  compacting = true;
-  needCompact = false;
-  log(`上下文 ${parseContextPercent(session.preview)?.toFixed(0) ?? "?"}% ≥ ${compactThreshold()}%，先压缩`);
-  await sendNow(compactCommand(session.agent), false);
-  phase = "sent";
+async function startCompact(session: AgentSession, plan: Plan) {
+  plan.compacting = true;
+  plan.needCompact = false;
+  log(`${session.paneId} 上下文 ${parseContextPercent(session.preview)?.toFixed(0) ?? "?"}% ≥ ${compactThreshold(plan)}%，先压缩`);
+  await sendNow(session, plan, compactCommand(session.agent), false);
 }
 
-async function maybeAutoSend() {
-  const session = selected();
-  if (!planRunning || !session) return;
+async function tickPlan(session: AgentSession, plan: Plan) {
   const now = Date.now();
-  const stableMs = Math.max(1, Number(idleMsInput().value) || 2) * 1000;
+  const stableMs = Math.max(1, plan.idleMs || 2) * 1000;
   const ctx = parseContextPercent(session.preview);
 
-  if (compacting) {
+  if (plan.compacting) {
     if (!session.idle) {
-      phase = "working";
-      idleSince = null;
+      plan.phase = "working";
+      plan.idleSince = null;
       return;
     }
-    if (phase === "sent") {
-      if (sentAt && now - sentAt < 3000) return;
-      phase = "settling";
-      idleSince = now;
-    } else if (phase === "working") {
-      phase = "settling";
-      idleSince = now;
+    if (plan.phase === "sent") {
+      if (plan.sentAt && now - plan.sentAt < 3000) return;
+      plan.phase = "settling";
+      plan.idleSince = now;
+    } else if (plan.phase === "working") {
+      plan.phase = "settling";
+      plan.idleSince = now;
     }
-    if (phase === "settling") {
-      if (idleSince && now - idleSince < stableMs) return;
-      compacting = false;
-      phase = "idle";
-      idleSince = now;
-      sentAt = null;
-      log("上下文压缩完成");
+    if (plan.phase === "settling") {
+      if (plan.idleSince && now - plan.idleSince < stableMs) return;
+      plan.compacting = false;
+      plan.phase = "idle";
+      plan.idleSince = now;
+      plan.sentAt = null;
+      log(`${session.paneId} 上下文压缩完成`);
     }
     return;
   }
 
-  const running = tasks.find((t) => t.status === "running" || t.status === "committing");
+  const running = plan.tasks.find((t) => t.status === "running" || t.status === "committing");
   if (running) {
     if (!session.idle) {
-      phase = "working";
-      idleSince = null;
+      plan.phase = "working";
+      plan.idleSince = null;
       return;
     }
-    if (phase === "sent") {
-      if (sentAt && now - sentAt < 3000) return;
-      phase = "settling";
-      idleSince = now;
-    } else if (phase === "working") {
-      phase = "settling";
-      idleSince = now;
+    if (plan.phase === "sent") {
+      if (plan.sentAt && now - plan.sentAt < 3000) return;
+      plan.phase = "settling";
+      plan.idleSince = now;
+    } else if (plan.phase === "working") {
+      plan.phase = "settling";
+      plan.idleSince = now;
     }
-    if (phase === "settling") {
-      if (idleSince && now - idleSince < stableMs) return;
+    if (plan.phase === "settling") {
+      if (plan.idleSince && now - plan.idleSince < stableMs) return;
       if (running.status === "running" && running.commit) {
         try {
-          await startCommit(running);
+          await startCommit(session, plan, running);
         } catch (error) {
-          log(`提交发送失败：${error}`, true);
-          completeRunning(running);
+          log(`${session.paneId} 提交发送失败：${error}`, true);
+          completeRunning(session, plan, running);
         }
         return;
       }
-      completeRunning(running);
+      completeRunning(session, plan, running);
     }
     return;
   }
 
   if (!session.idle) return;
-  if (idleSince && now - idleSince < stableMs) return;
+  if (plan.idleSince && now - plan.idleSince < stableMs) return;
 
-  if (needCompact && ctx != null && ctx >= compactThreshold()) {
+  if (plan.needCompact && ctx != null && ctx >= compactThreshold(plan)) {
     try {
-      await startCompact(session);
+      await startCompact(session, plan);
     } catch (error) {
-      compacting = false;
-      log(`压缩发送失败：${error}`, true);
+      plan.compacting = false;
+      log(`${session.paneId} 压缩发送失败：${error}`, true);
     }
     return;
   }
 
-  let next = tasks.find((t) => t.status === "pending");
+  let next = plan.tasks.find((t) => t.status === "pending");
   if (!next) {
-    if (!startNextRound()) return;
-    next = tasks.find((t) => t.status === "pending");
+    if (!startNextRound(session, plan)) return;
+    next = plan.tasks.find((t) => t.status === "pending");
     if (!next) return;
   }
   try {
     next.status = "running";
-    lastQueueSig = "";
-    renderQueue(true);
-    await sendNow(next.text, false);
-    phase = "sent";
+    if (session.id === selectedId) refreshSelectedPlan();
+    await sendNow(session, plan, next.text, false);
   } catch (error) {
     next.status = "pending";
-    phase = "idle";
-    log(String(error), true);
-    planRunning = false;
-    syncRunButtons();
-    lastQueueSig = "";
-    renderQueue(true);
+    plan.phase = "idle";
+    plan.planRunning = false;
+    log(`${session.paneId} ${String(error)}`, true);
+    if (session.id === selectedId) {
+      setAppTheme(session.agent);
+      refreshSelectedPlan();
+    }
+  }
+}
+
+async function maybeAutoSend() {
+  for (const session of sessions) {
+    const plan = plans.get(session.id);
+    if (!plan?.planRunning) continue;
+    await tickPlan(session, plan);
   }
 }
 
@@ -1134,7 +1271,9 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     try {
-      await sendNow(withCommit(text, commitAfterInput().checked), true);
+      const session = selected();
+      if (!session) throw new Error("请先选择一个 Herdr pane");
+      await sendNow(session, activePlan(), withCommit(text, commitAfterInput().checked), true);
       taskInput().value = "";
     } catch (error) {
       log(String(error), true);
@@ -1211,7 +1350,14 @@ window.addEventListener("DOMContentLoaded", () => {
     $("app").classList.toggle("plan-open");
     syncRunButtons();
   });
-  loopRoundsInput().addEventListener("change", () => renderLoopStatus());
+  const persistPlanInputs = () => {
+    syncPlanInputsFromUi();
+    renderLoopStatus();
+  };
+  loopRoundsInput().addEventListener("change", persistPlanInputs);
+  idleMsInput().addEventListener("change", persistPlanInputs);
+  compactAtInput().addEventListener("change", persistPlanInputs);
+  commitAfterInput().addEventListener("change", persistPlanInputs);
   syncRunButtons();
 
   log("已启动。任务走 Herdr pane，可导入列表并在完成后自动要求提交代码。");

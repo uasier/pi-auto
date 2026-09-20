@@ -210,6 +210,17 @@ body { overflow: hidden; }
   display: none;
 }
 
+.plan-bind {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.plan-bind.on {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .version-btn {
   font-variant-numeric: tabular-nums;
 }
