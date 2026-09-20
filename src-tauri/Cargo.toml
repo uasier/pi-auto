@@ -1,6 +1,6 @@
 [package]
 name = "pi-auto"
-version = "0.1.0"
+version = "0.2.0"
 description = "Watch a pi terminal and send the next task when it is idle"
 authors = ["you"]
 edition = "2021"
