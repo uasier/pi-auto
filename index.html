@@ -21,18 +21,14 @@
           </div>
           <div>
             <h1>自动应答</h1>
-            <p>空闲了，就把下一轮打进去</p>
           </div>
         </header>
         <div class="rail-head">
           <span>会话</span>
-          <button type="button" id="refresh-btn" class="ghost icon-btn" title="刷新">
-            <span class="refresh-glyph">↻</span>
-            刷新
-          </button>
+          <button type="button" id="refresh-btn" class="ghost icon-btn" title="刷新">↻</button>
         </div>
         <div id="herdr-banner" class="herdr-banner off">
-          <span id="herdr-banner-text">Herdr 未连接</span>
+          <span id="herdr-banner-text">未连接</span>
           <button type="button" id="herdr-guide-btn" class="ghost">安装引导</button>
         </div>
         <div id="sheet-bar" class="sheet-bar"></div>
@@ -49,9 +45,9 @@
         </div>
         <header class="main-head">
           <div class="title-block">
-            <div class="kicker" id="target-kicker">等待选择</div>
-            <div id="target-title" class="target-title">未选择 Herdr pane</div>
-            <div id="target-meta" class="target-meta">上为终端，下为输入</div>
+            <div class="kicker" id="target-kicker">未选择</div>
+            <div id="target-title" class="target-title">选择一个会话</div>
+            <div id="target-meta" class="target-meta"></div>
           </div>
           <div class="head-tools">
             <div id="status-pill" class="pill idle-unknown">
@@ -68,9 +64,8 @@
         <div class="panel preview-panel">
           <div class="term-chrome">
             <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
-            <span class="term-title">实时画面</span>
             <span id="preview-hint" class="term-hint"></span>
-            <span id="live-badge" class="live-badge">待机</span>
+            <span id="live-badge" class="live-badge">—</span>
           </div>
           <div class="preview-stage">
             <img id="preview-image" class="preview-image hidden" alt="终端画面" />
@@ -78,8 +73,8 @@
             <pre id="preview" class="preview hidden"></pre>
             <div id="preview-empty" class="preview-empty">
               <img src="/src/assets/app-icon.png" alt="" />
-              <strong>先选一个 Herdr pane</strong>
-              <span>点「会话」选择 pane，在下方输入任务</span>
+              <strong>选择会话</strong>
+              <span>从左侧点一个 pane</span>
             </div>
             <div class="scanlines" aria-hidden="true"></div>
           </div>
@@ -88,7 +83,7 @@
         <div class="panel composer">
           <textarea
             id="task-input"
-            placeholder="写给当前 Agent 的话。⌘ / Ctrl + Enter 发送。"
+            placeholder="输入后发送  ·  ⌘ Enter"
           ></textarea>
           <div class="composer-bar">
             <span class="grow"></span>
@@ -99,7 +94,7 @@
 
       <aside class="drawer" id="plan-drawer">
         <div class="panel run-card">
-          <div class="panel-title">循环控制 <span id="plan-bound" class="count-badge">未绑定窗口</span></div>
+          <div class="panel-title">循环 <span id="plan-bound" class="count-badge">未绑定</span></div>
           <div class="loop-meter">
             <div id="loop-bar" class="loop-bar"><i id="loop-bar-fill"></i></div>
             <span id="loop-status" class="loop-status">尚未开始</span>
@@ -129,7 +124,7 @@
         </div>
         <div class="panel plan-panel">
           <div class="panel-title">
-            任务计划
+            计划
             <span class="plan-tools">
               <button type="button" id="queue-btn" class="primary" disabled>加入计划</button>
               <button type="button" id="import-btn">导入</button>
@@ -141,7 +136,7 @@
             <span>完成后提交代码</span>
           </label>
           <ol id="queue-list" class="queue-list">
-            <li class="empty">还没有任务。点「加入计划」或「导入」。</li>
+            <li class="empty">还没有任务</li>
           </ol>
         </div>
         <div class="panel log-panel">
@@ -261,7 +256,7 @@
     <div id="import-modal" class="guide hidden" role="dialog">
       <div class="guide-card">
         <h2>导入任务列表</h2>
-        <p class="guide-lead">支持 JSON 数组、Markdown 列表、纯文本（一行一条，或空行分段）。导入后会按开关自动附上「完成后提交代码」。</p>
+        <p class="guide-lead">JSON / Markdown / 纯文本，一行一条或空行分段。</p>
         <div class="actions" style="margin: 0 0 10px">
           <button type="button" id="import-pick">从文件选择</button>
         </div>

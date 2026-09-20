@@ -131,7 +131,7 @@ body { overflow: hidden; }
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 20px 16px 14px;
+  padding: 14px 16px 10px;
 }
 
 .brand-mark {
@@ -211,7 +211,6 @@ body { overflow: hidden; }
 }
 
 .plan-bind {
-  margin-top: 4px;
   font-size: 11px;
   color: var(--muted);
 }
@@ -479,32 +478,13 @@ pre.cmd {
   font-size: 12px;
 }
 
-.session .cwd,
-.session .tty,
-.session .win,
-.session .why {
+.session .cwd {
   color: var(--muted);
   font-size: 11px;
   margin-top: 4px;
-  line-height: 1.45;
-  white-space: normal;
-  overflow: visible;
-  word-break: break-all;
+  line-height: 1.4;
   text-align: left;
-}
-
-.session .tty {
-  font-family: "SF Mono", ui-monospace, Menlo, monospace;
-  word-break: break-word;
-}
-
-.session .cwd {
-  color: #e8d7a4;
-  word-break: break-word;
-}
-
-.session .why {
-  color: color-mix(in srgb, var(--agent) 70%, var(--muted));
+  word-break: break-all;
 }
 
 .perm {
@@ -706,14 +686,18 @@ pre.cmd {
   flex: none;
 }
 
+.composer {
+  padding: 10px 12px;
+}
+
 .composer textarea {
-  min-height: 72px;
+  min-height: 56px;
 }
 
 .main-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
 }
 
@@ -726,17 +710,22 @@ pre.cmd {
 }
 
 .target-title {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 750;
   letter-spacing: 0.01em;
 }
 
 .target-meta {
-  margin-top: 5px;
+  margin-top: 2px;
   color: var(--muted);
   font-size: 12px;
   max-width: 720px;
-  line-height: 1.45;
+  line-height: 1.4;
+  min-height: 0;
+}
+
+.target-meta:empty {
+  display: none;
 }
 
 .pill {

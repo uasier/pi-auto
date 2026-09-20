@@ -379,11 +379,11 @@ function renderLoopStatus() {
   const bound = $("plan-bound");
   if (bound) {
     const session = selected();
-    bound.textContent = session ? `绑定 ${session.paneId}` : "未绑定窗口";
+    bound.textContent = session ? session.paneId : "未绑定";
   }
   if (!plan) {
     $("loop-bar-fill").style.width = "0%";
-    $("loop-status").textContent = "先选一个会话，计划会绑到该窗口";
+    $("loop-status").textContent = "先选会话";
     return;
   }
   const totalRounds = loopRounds(plan);
@@ -395,8 +395,8 @@ function renderLoopStatus() {
   fill.style.width = `${pct}%`;
   if (!plan.planRunning) {
     $("loop-status").textContent = total
-      ? `待命 · ${total} 条任务 × ${totalRounds} 次 · 进度 ${pct}%`
-      : "尚未开始";
+      ? `${total} 条 × ${totalRounds} 轮`
+      : "空";
     return;
   }
   const cur = currentTask(plan);
@@ -411,7 +411,7 @@ function renderLoopStatus() {
           ? "等待空闲"
           : "本轮收尾";
   $("loop-status").textContent =
-    `第 ${plan.currentRound}/${totalRounds} 次 · ${done}/${total} 完成 · ${now}` +
+    `${plan.currentRound}/${totalRounds} · ${done}/${total} · ${now}` +
     (cur ? ` · ${cur.title}` : "");
 }
 
@@ -476,7 +476,7 @@ function renderList(force = false) {
   const items = grouped.get(activeSheet) ?? [];
   const meta = AGENT_META[activeSheet];
   if (items.length === 0) {
-    box.innerHTML = `<div class="empty boot">Herdr 里没有运行中的 ${meta.label} pane</div>`;
+    box.innerHTML = `<div class="empty boot">没有 ${meta.label}</div>`;
     return;
   }
   box.innerHTML = items
@@ -485,21 +485,14 @@ function renderList(force = false) {
       const st = statusLabel(s);
       const plan = plans.get(s.id);
       const planHint = plan && plan.tasks.length
-        ? `<div class="plan-bind${plan.planRunning ? " on" : ""}">${plan.planRunning ? "循环中" : "计划"} ${plan.tasks.filter((t) => t.status === "done").length}/${plan.tasks.length}</div>`
-        : "";
-      const title = s.title?.trim()
-        ? `<div class="win">${escapeHtml(s.title)}</div>`
+        ? `<span class="plan-bind${plan.planRunning ? " on" : ""}">${plan.planRunning ? "循环" : "计划"} ${plan.tasks.filter((t) => t.status === "done").length}/${plan.tasks.length}</span>`
         : "";
       return `<button type="button" class="session${active}" data-id="${escapeHtml(s.id)}">
         <div class="row">
-          <span class="host">${escapeHtml(s.agentLabel)}</span>
+          <span class="host">${escapeHtml(s.paneId)}</span>
           <span class="pill ${st.cls}"><span class="pill-dot"></span>${st.text}</span>
         </div>
-        <div class="tty">${escapeHtml(s.paneId)} · ${escapeHtml(s.agentState)}${s.interactiveReady ? " · 可交互" : ""}</div>
-        <div class="cwd">${escapeHtml(shortPath(s.cwd))}</div>
-        ${title}
-        ${planHint}
-        <div class="why">${escapeHtml(s.reason)}</div>
+        <div class="cwd">${escapeHtml(shortPath(s.cwd))}${planHint ? ` · ${planHint}` : ""}</div>
       </button>`;
     })
     .join("");
@@ -524,12 +517,12 @@ function renderQueue(force = false) {
   $("queue-count").textContent = String(total);
   const list = $("queue-list");
   if (!plan) {
-    list.innerHTML = `<li class="empty">先选一个会话，计划会绑到该窗口。</li>`;
+    list.innerHTML = `<li class="empty">先选会话</li>`;
     renderLoopStatus();
     return;
   }
   if (plan.tasks.length === 0) {
-    list.innerHTML = `<li class="empty">这个窗口还没有任务。加入计划或导入。</li>`;
+    list.innerHTML = `<li class="empty">还没有任务</li>`;
     renderLoopStatus();
     return;
   }
@@ -557,11 +550,11 @@ function renderQueue(force = false) {
         <span class="mark">${mark}</span>
         <div>
           <div class="title">${escapeHtml(item.title)}</div>
-          <div class="meta">${stage} · ${item.commit ? "完成后提交" : "不提交"}</div>
+          <div class="meta">${stage}${item.commit ? " · 提交" : ""}</div>
         </div>
         <div class="task-ops">
-          <button type="button" data-act="commit" data-id="${item.id}" ${locked ? "disabled" : ""}>${item.commit ? "含提交" : "无提交"}</button>
-          <button type="button" data-act="remove" data-id="${item.id}" ${locked ? "disabled" : ""}>移除</button>
+          <button type="button" data-act="commit" data-id="${item.id}" ${locked ? "disabled" : ""}>${item.commit ? "提交" : "不提交"}</button>
+          <button type="button" data-act="remove" data-id="${item.id}" ${locked ? "disabled" : ""}>×</button>
         </div>
       </li>`;
     })
@@ -673,11 +666,11 @@ function renderMain() {
   image.classList.add("hidden");
 
   if (!session) {
-    $("target-kicker").textContent = "等待选择";
-    $("target-title").textContent = "未选择 Herdr pane";
-    $("target-meta").textContent = "先启动 Herdr，在 pane 里打开 agent，再从左侧点选";
+    $("target-kicker").textContent = "未选择";
+    $("target-title").textContent = "选择一个会话";
+    $("target-meta").textContent = "";
     $("preview-hint").textContent = "";
-    live.textContent = "待机";
+    live.textContent = "—";
     live.className = "live-badge";
     empty.classList.remove("hidden");
     hideTerm();
@@ -687,15 +680,14 @@ function renderMain() {
 
   empty.classList.add("hidden");
   if (headChanged) {
-    $("target-kicker").textContent = `${session.agentLabel} · Herdr`;
-    const ctxLabel = ctx == null ? session.agentState : `${session.agentState}  ·  上下文 ${ctx.toFixed(0)}%`;
-    $("target-title").textContent = `${session.paneId}  ·  ${ctxLabel}`;
-    $("status-text").textContent =
-      activePlan()?.compacting ? "压缩中" : ctx != null && ctx >= compactThreshold() ? `${st.text} · ${ctx.toFixed(0)}%` : st.text;
-    $("target-meta").textContent = `${shortPath(session.cwd)}  ·  ${session.reason}`;
-    live.textContent = session.idle ? "IDLE" : "WORKING";
+    $("target-kicker").textContent = session.agentLabel;
+    $("target-title").textContent = session.paneId;
+    const ctxBit = ctx == null ? "" : ` · ${ctx.toFixed(0)}%`;
+    $("status-text").textContent = activePlan()?.compacting ? "压缩中" : `${st.text}${ctxBit}`;
+    $("target-meta").textContent = shortPath(session.cwd);
+    live.textContent = session.idle ? "空闲" : "执行";
     live.className = `live-badge ${session.idle ? "on" : "busy"}`;
-    $("preview-hint").textContent = "Herdr visible · ANSI";
+    $("preview-hint").textContent = "";
   }
 
   const nextText = session.preview.trim();
@@ -1052,10 +1044,10 @@ async function refreshHerdrStatus() {
     const status = await invoke<HerdrStatus>("herdr_status");
     const el = $("herdr-banner");
     const text = status.connected
-      ? `Herdr 已连接 · ${status.agentCount} 个 agent`
+      ? `已连接 · ${status.agentCount}`
       : status.error
-        ? `Herdr 未连接：${status.error}`
-        : "Herdr 未连接。请安装并启动 Herdr。";
+        ? `未连接`
+        : "未连接";
     if (text !== lastHerdrText) {
       lastHerdrText = text;
       el.className = `herdr-banner ${status.connected ? "on" : "off"}`;
@@ -1070,7 +1062,7 @@ async function refreshHerdrStatus() {
     }
   } catch (error) {
     const el = $("herdr-banner");
-    const text = `Herdr 检测失败：${error}`;
+    const text = "未连接";
     if (text === lastHerdrText) return;
     lastHerdrText = text;
     el.className = "herdr-banner off";
@@ -1360,7 +1352,7 @@ window.addEventListener("DOMContentLoaded", () => {
   commitAfterInput().addEventListener("change", persistPlanInputs);
   syncRunButtons();
 
-  log("已启动。任务走 Herdr pane，可导入列表并在完成后自动要求提交代码。");
+  log("已启动");
   void loadAppInfo().then(() => maybeCheckUpdate());
   void refreshHerdrStatus();
   void poll();
