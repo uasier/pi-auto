@@ -20,7 +20,7 @@ pub struct AgentSession {
     pub interactive_ready: bool,
 }
 
-fn snapshot_sessions(preview_id: Option<String>) -> Result<Vec<AgentSession>, String> {
+fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String> {
     let (_endpoint, panes) = match herdr::list_panes() {
         Ok(v) => v,
         Err(_) => return Ok(Vec::new()),
@@ -28,7 +28,7 @@ fn snapshot_sessions(preview_id: Option<String>) -> Result<Vec<AgentSession>, St
     let mut sessions = Vec::new();
     for pane in panes {
         let id = format!("herdr:{}", pane.pane_id);
-        let want_live = preview_id.as_deref() == Some(id.as_str());
+        let want_live = preview_ids.iter().any(|item| item == &id);
         let preview = if want_live {
             herdr::read_pane(&pane.pane_id).unwrap_or_default()
         } else {
@@ -66,13 +66,22 @@ fn snapshot_sessions(preview_id: Option<String>) -> Result<Vec<AgentSession>, St
 }
 
 #[tauri::command]
-fn list_sessions(preview_id: Option<String>) -> Result<Vec<AgentSession>, String> {
-    snapshot_sessions(preview_id)
+fn list_sessions(
+    preview_id: Option<String>,
+    preview_ids: Option<Vec<String>>,
+) -> Result<Vec<AgentSession>, String> {
+    let mut ids = preview_ids.unwrap_or_default();
+    if let Some(id) = preview_id {
+        if !ids.iter().any(|item| item == &id) {
+            ids.push(id);
+        }
+    }
+    snapshot_sessions(&ids)
 }
 
 #[tauri::command]
 fn send_to_session(id: String, text: String, force: bool) -> Result<String, String> {
-    let sessions = snapshot_sessions(Some(id.clone()))?;
+    let sessions = snapshot_sessions(&[id.clone()])?;
     let session = sessions
         .iter()
         .find(|s| s.id == id)
@@ -85,6 +94,16 @@ fn send_to_session(id: String, text: String, force: bool) -> Result<String, Stri
         "已通过 Herdr 发送到 {} ({})",
         session.agent_label, session.pane_id
     ))
+}
+
+#[tauri::command]
+fn nudge_session(id: String, text: String) -> Result<String, String> {
+    let pane_id = id
+        .strip_prefix("herdr:")
+        .unwrap_or(id.as_str())
+        .to_string();
+    let via = herdr::nudge_pane(&pane_id, &text)?;
+    Ok(format!("已输入「{}」唤醒 {pane_id}（{via}）", text.trim()))
 }
 
 #[tauri::command]
@@ -136,6 +155,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             send_to_session,
+            nudge_session,
             herdr_status,
             app_info,
             check_update,

@@ -112,10 +112,17 @@ const USAGE_SEEN_KEY = "pi-auto-usage-seen";
 const SKIP_VERSION_KEY = "pi-auto-skip-version";
 const UPDATE_CHECKED_KEY = "pi-auto-update-checked-at";
 const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+const STALL_CHECK_MS = 5 * 60 * 1000;
+const STALL_DIFF_RATIO = 0.01;
+const NUDGE_TEXT = "继续";
 let appInfo: AppInfo | null = null;
 let updateInfo: UpdateCheck | null = null;
 let updateChecking = false;
 let updateInstalling = false;
+let pollInFlight = false;
+type StallWatch = { text: string; at: number };
+const stallWatch = new Map<string, StallWatch>();
+const stallNudging = new Set<string>();
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -245,6 +252,57 @@ function selected(): AgentSession | undefined {
 
 function stripAnsi(text: string) {
   return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1b./g, "");
+}
+
+function outputSnapshot(raw: string) {
+  return stripAnsi(raw)
+    .replace(/\r/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .replace(/^\n+|\n+$/g, "");
+}
+
+function outputChangeRatio(prev: string, next: string) {
+  if (prev === next) return 0;
+  const max = Math.max(prev.length, next.length);
+  if (max === 0) return 0;
+  const min = Math.min(prev.length, next.length);
+  let head = 0;
+  while (head < min && prev.charCodeAt(head) === next.charCodeAt(head)) head++;
+  let tail = 0;
+  while (
+    tail < min - head &&
+    prev.charCodeAt(prev.length - 1 - tail) === next.charCodeAt(next.length - 1 - tail)
+  ) {
+    tail++;
+  }
+  return (max - head - tail) / max;
+}
+
+function armStallWatch(session: AgentSession) {
+  const text = outputSnapshot(session.preview);
+  stallWatch.set(session.id, {
+    text,
+    at: text ? Date.now() : Date.now() - STALL_CHECK_MS,
+  });
+}
+
+function clearStallWatch(id: string | null) {
+  if (!id) return;
+  stallWatch.delete(id);
+  stallNudging.delete(id);
+}
+
+function stallPreviewIds(now = Date.now()) {
+  const ids: string[] = [];
+  for (const [id, plan] of plans) {
+    if (!plan.planRunning) continue;
+    const watch = stallWatch.get(id);
+    if (!watch || now - watch.at >= STALL_CHECK_MS) ids.push(id);
+  }
+  return ids;
 }
 
 function parseContextPercent(preview: string): number | null {
@@ -788,6 +846,7 @@ async function sendNow(session: AgentSession, plan: Plan | null, text: string, f
     plan.sentAt = Date.now();
     plan.idleSince = null;
   }
+  armStallWatch(session);
 }
 
 function syncRunButtons() {
@@ -838,6 +897,7 @@ function startLoop() {
   plan.planRunning = true;
   plan.compacting = false;
   plan.needCompact = true;
+  armStallWatch(session);
   lastQueueSig = "";
   log(`${session.paneId} 开始循环：${plan.tasks.length} 条 × ${loopRounds(plan)} 次`);
   setAppTheme(session.agent);
@@ -851,6 +911,7 @@ function pauseLoop() {
   if (!plan?.planRunning) return;
   plan.planRunning = false;
   plan.compacting = false;
+  clearStallWatch(selectedId);
   log(`${selected()?.paneId ?? "当前窗口"} 已暂停循环`);
   setAppTheme(selected()?.agent);
   syncRunButtons();
@@ -868,6 +929,7 @@ function stopLoop() {
   plan.phase = "idle";
   plan.idleSince = null;
   plan.sentAt = null;
+  clearStallWatch(selectedId);
   for (const task of plan.tasks) task.status = "pending";
   log(`${selected()?.paneId ?? "当前窗口"} 已停止循环，进度已清零`);
   setAppTheme(selected()?.agent);
@@ -1085,9 +1147,12 @@ function refreshSelectedPlan() {
 }
 
 async function poll() {
+  if (pollInFlight) return;
+  pollInFlight = true;
   try {
     sessions = await invoke<AgentSession[]>("list_sessions", {
       previewId: selectedId,
+      previewIds: stallPreviewIds(),
     });
     if (selectedId && !sessions.some((s) => s.id === selectedId)) {
       log(`会话 ${selectedId} 已退出，计划仍保留`, true);
@@ -1097,9 +1162,58 @@ async function poll() {
     renderList();
     renderMain();
     await maybeAutoSend();
+    await maybeUnstickStalled();
     renderQueue();
   } catch (error) {
     log(String(error), true);
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+async function maybeUnstickStalled() {
+  const now = Date.now();
+  const live = new Set(sessions.map((s) => s.id));
+  for (const id of [...stallWatch.keys()]) {
+    if (!plans.get(id)?.planRunning || !live.has(id)) stallWatch.delete(id);
+  }
+  for (const session of sessions) {
+    const plan = plans.get(session.id);
+    if (!plan?.planRunning) continue;
+    const prev = stallWatch.get(session.id);
+    if (prev && now - prev.at < STALL_CHECK_MS) continue;
+    const snap = outputSnapshot(session.preview);
+    if (!snap) {
+      stallWatch.set(session.id, {
+        text: prev?.text ?? "",
+        at: now - STALL_CHECK_MS + 15_000,
+      });
+      continue;
+    }
+    if (!prev?.text) {
+      stallWatch.set(session.id, { text: snap, at: now });
+      continue;
+    }
+    const ratio = outputChangeRatio(prev.text, snap);
+    stallWatch.set(session.id, { text: snap, at: now });
+    if (session.idle || ratio >= STALL_DIFF_RATIO) continue;
+    if (stallNudging.has(session.id)) continue;
+    stallNudging.add(session.id);
+    try {
+      const result = await invoke<string>("nudge_session", {
+        id: session.id,
+        text: NUDGE_TEXT,
+      });
+      log(
+        `${session.paneId} 输出 5 分钟几乎无变化（差异 ${(ratio * 100).toFixed(2)}%），${result}`,
+      );
+    } catch (error) {
+      log(`${session.paneId} 卡死唤醒失败：${error}`, true);
+      const watch = stallWatch.get(session.id);
+      if (watch) watch.at = Date.now() - STALL_CHECK_MS + 60_000;
+    } finally {
+      stallNudging.delete(session.id);
+    }
   }
 }
 

@@ -186,6 +186,39 @@ pub fn prompt_agent(pane_id: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Wake a frozen CLI by submitting `text`.
+/// `agent.prompt` still submits while the agent is `working`.
+/// Blocked or not-ready agents reject that, so fall back to raw pane input.
+pub fn nudge_pane(pane_id: &str, text: &str) -> Result<&'static str, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("唤醒文本不能为空".into());
+    }
+    match prompt_agent(pane_id, text) {
+        Ok(()) => Ok("prompt"),
+        Err(prompt_err) => match send_pane_input(pane_id, text) {
+            Ok(()) => Ok("input"),
+            Err(input_err) => Err(format!(
+                "prompt 失败：{prompt_err}；终端输入失败：{input_err}"
+            )),
+        },
+    }
+}
+
+fn send_pane_input(pane_id: &str, text: &str) -> Result<(), String> {
+    let sock = discover_socket().ok_or_else(|| "Herdr 未运行".to_string())?;
+    rpc(
+        &sock,
+        "pane.send_input",
+        json!({
+            "pane_id": pane_id,
+            "text": text,
+            "keys": ["enter"]
+        }),
+    )?;
+    Ok(())
+}
+
 fn agent_label(agent: &str) -> &'static str {
     match agent {
         "pi" => "Pi",
