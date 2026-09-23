@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>终端自动应答</title>
+    <meta name="description" content="通过 Herdr 接管 Pi、Claude、Codex、Grok 的 pane。空闲后发送下一轮，也可循环、续跑和提交。" />
+    <link rel="icon" href="icon.png" />
+    <link rel="stylesheet" href="site.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <a class="brand" href="./">
+        <img src="icon.png" alt="" width="28" height="28" />
+        <span>终端自动应答</span>
+      </a>
+      <nav>
+        <a href="#use">用法</a>
+        <a href="#keys">密钥</a>
+        <a href="https://github.com/uasier/pi-auto">仓库</a>
+        <a href="https://github.com/uasier/pi-auto/releases/latest">下载</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="kicker">macOS · 只连接 Herdr pane</p>
+        <h1>空闲之后，把下一轮发出去。</h1>
+        <p class="lead">
+          读 Pi、Claude、Codex、Grok 的终端，看 idle / working。计划绑在当前窗口上，换会话不会把任务带走。
+        </p>
+        <div class="actions">
+          <a id="dl-arm" class="primary" href="https://github.com/uasier/pi-auto/releases/latest">Apple Silicon</a>
+          <a id="dl-intel" href="https://github.com/uasier/pi-auto/releases/latest">Intel</a>
+          <a class="quiet" href="https://github.com/uasier/pi-auto">查看源码</a>
+        </div>
+        <p id="dl-note" class="note">安装包未签名。首次请右键 App，选择「打开」。</p>
+      </section>
+
+      <section class="stage" aria-label="界面">
+        <div class="pane sessions">
+          <div class="pane-title">会话</div>
+          <div class="row on"><i class="dot pi"></i>Pi · pane 3</div>
+          <div class="row"><i class="dot claude"></i>Claude · pane 1</div>
+          <div class="row"><i class="dot codex"></i>Codex · pane 2</div>
+        </div>
+        <div class="pane term">
+          <div class="pane-title">终端</div>
+          <pre>working
+改完发送逻辑，等空闲。
+<span class="dim">上下文 42%</span></pre>
+        </div>
+        <div class="pane plan">
+          <div class="pane-title">执行</div>
+          <div class="chip">循环 <span>空闲后发下一条</span></div>
+          <div class="chip">续跑 <span>Jev / DeepSeek / Laya</span></div>
+          <div class="chip">提交 <span>结束后 git commit</span></div>
+        </div>
+      </section>
+
+      <section id="use">
+        <h2>左边选，中间看，右边排。</h2>
+        <div class="grid">
+          <article>
+            <h3>发送</h3>
+            <p>输入后点发送，或 ⌘ / Ctrl + Enter。优先走 Herdr <code>agent.prompt</code>，不行再向 pane 输入。</p>
+          </article>
+          <article>
+            <h3>计划</h3>
+            <p>加入计划或导入文本。计划只属于当前选中的窗口。</p>
+          </article>
+          <article>
+            <h3>循环</h3>
+            <p>空闲稳定后发下一条。可设次数、空闲秒数，以及上下文百分比。超过阈值会先压缩。</p>
+          </article>
+          <article>
+            <h3>卡住</h3>
+            <p>循环中若 5 分钟内终端变化不到 1%，且不是 idle，会输入「继续」。</p>
+          </article>
+          <article>
+            <h3>续跑</h3>
+            <p>每轮结束后列出下一步，由决策模型选一项再发。置信不够或选择停止，就不再续。</p>
+          </article>
+          <article>
+            <h3>提交</h3>
+            <p>任务和续跑都结束后，单独再发一轮 git commit。不 push。</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="keys">
+        <h2>密钥在系统菜单里。</h2>
+        <p class="lead">⌘ , 打开密钥设置。检查用的是当前输入，不必先保存。Key 留空用环境变量，地址留空用默认值。</p>
+        <table>
+          <thead>
+            <tr><th>决策</th><th>默认地址</th><th>环境变量</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Jev</td><td>api.typesafe.ai</td><td>TYPESAFE_API_KEY</td></tr>
+            <tr><td>DeepSeek</td><td>api.deepseek.com</td><td>DEEPSEEK_API_KEY</td></tr>
+            <tr><td>Laya</td><td>127.0.0.1:8100</td><td>LAYA_API_KEY，可空</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>用之前。</h2>
+        <ol>
+          <li>安装并启动 <a href="https://herdr.dev/docs/install/">Herdr</a>。</li>
+          <li>在 Herdr pane 里运行 agent。普通终端无法接入。</li>
+          <li>确认本机有 <code>~/.config/herdr/herdr.sock</code>。</li>
+        </ol>
+        <p class="note">没选会话时，中间是一局贪吃蛇。手动、Jev、Laya 都要点开始才走。</p>
+      </section>
+    </main>
+
+    <footer>
+      <span>MIT</span>
+      <a href="https://github.com/uasier/pi-auto">uasier/pi-auto</a>
+      <a href="https://github.com/uasier/pi-auto/blob/main/README.md">说明</a>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>
