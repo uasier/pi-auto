@@ -93,52 +93,22 @@ h2 {
 .actions a.quiet { background: transparent; color: var(--muted); }
 .note { color: var(--muted); font-size: 13px; }
 
-.stage {
-  display: grid;
-  grid-template-columns: 180px 1fr 220px;
-  gap: 8px;
-  margin: 8px 0 56px;
+.shot {
+  margin: 28px 0 56px;
 }
-.pane {
-  min-height: 168px;
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--surface);
-  padding: 12px;
+  background: var(--term);
 }
-.term { background: var(--term); }
-.pane-title { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
-.row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.shot figcaption {
+  margin-top: 8px;
   color: var(--muted);
   font-size: 13px;
-  padding: 6px 0;
 }
-.row.on { color: var(--text); }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-.dot.pi { background: #a99bc4; }
-.dot.claude { background: #c4978c; }
-.dot.codex { background: #7eaea6; }
-pre {
-  margin: 0;
-  color: #d5dbe4;
-  font-family: "SF Mono", ui-monospace, Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-.dim { color: var(--muted); }
-.chip {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 0;
-  border-top: 1px solid var(--line);
-  font-size: 13px;
-}
-.chip span { color: var(--muted); }
 
 section + section { margin-top: 48px; }
 .grid {
@@ -185,6 +155,6 @@ footer a:hover { color: var(--text); }
 
 @media (max-width: 800px) {
   h1 { font-size: 32px; }
-  .stage, .grid { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; }
   .bar { align-items: flex-start; flex-direction: column; }
 }
