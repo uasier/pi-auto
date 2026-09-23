@@ -3,6 +3,8 @@ mod jev;
 mod update;
 
 use serde::Serialize;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{Emitter, Manager};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +21,8 @@ pub struct AgentSession {
     pub reason: String,
     pub preview: String,
     pub interactive_ready: bool,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String> {
@@ -61,6 +65,8 @@ fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String
             reason,
             preview,
             interactive_ready: pane.interactive_ready,
+            cols: pane.cols,
+            rows: pane.rows,
         });
     }
     Ok(sessions)
@@ -104,15 +110,52 @@ fn read_session_text(id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn probe_decision(
+    provider: Option<String>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+) -> jev::ProbeReport {
+    tauri::async_runtime::spawn_blocking(move || jev::probe(provider, api_key, base_url))
+        .await
+        .unwrap_or_else(|err| jev::ProbeReport {
+            ok: false,
+            message: format!("检查失败：{err}"),
+            endpoint: String::new(),
+            latency_ms: 0,
+        })
+}
+
+#[tauri::command]
+async fn decision_status(laya_base: Option<String>) -> jev::BackendStatus {
+    tauri::async_runtime::spawn_blocking(move || jev::backend_status(laya_base))
+        .await
+        .unwrap_or(jev::BackendStatus {
+            jev: false,
+            laya: false,
+            laya_base: None,
+        })
+}
+
+#[tauri::command]
 async fn jev_choose(
     provider: Option<String>,
     api_key: Option<String>,
     base_url: Option<String>,
     state: String,
     options: Vec<jev::JevOption>,
+    instructions: Option<String>,
+    include_stop: Option<bool>,
 ) -> Result<jev::JevDecision, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        jev::choose(provider, api_key, base_url, state, options)
+        jev::choose(
+            provider,
+            api_key,
+            base_url,
+            state,
+            options,
+            instructions,
+            include_stop,
+        )
     })
     .await
     .map_err(|e| format!("{e}"))?
@@ -170,16 +213,84 @@ async fn install_update() -> Result<String, String> {
         .map_err(|e| format!("{e}"))?
 }
 
+fn install_menu(app: &tauri::App) -> tauri::Result<()> {
+    let ai_keys = MenuItem::with_id(app, "ai-keys", "密钥设置…", true, Some("CmdOrCtrl+,") )?;
+    let close_window = PredefinedMenuItem::close_window(app, Some("关闭窗口"))?;
+    let check_update = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
+    let usage = MenuItem::with_id(app, "usage", "使用说明", true, Some("CmdOrCtrl+/"))?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(
+                app,
+                "终端自动应答",
+                true,
+                &[
+                    &ai_keys,
+                    &PredefinedMenuItem::separator(app)?,
+                    &check_update,
+                    &PredefinedMenuItem::separator(app)?,
+                    #[cfg(target_os = "macos")]
+                    &PredefinedMenuItem::hide(app, Some("隐藏"))?,
+                    #[cfg(target_os = "macos")]
+                    &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
+                    #[cfg(target_os = "macos")]
+                    &PredefinedMenuItem::separator(app)?,
+                    &close_window,
+                    &PredefinedMenuItem::quit(app, Some("退出"))?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app,
+                "编辑",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, Some("撤销"))?,
+                    &PredefinedMenuItem::redo(app, Some("重做"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, Some("剪切"))?,
+                    &PredefinedMenuItem::copy(app, Some("拷贝"))?,
+                    &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+                    &PredefinedMenuItem::select_all(app, Some("全选"))?,
+                ],
+            )?,
+            &Submenu::with_id_and_items(
+                app,
+                tauri::menu::HELP_SUBMENU_ID,
+                "说明",
+                true,
+                &[&usage],
+            )?,
+        ],
+    )?;
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        let _ = app.emit("app-menu", event.id().0.clone());
+    });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            install_menu(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                window.app_handle().exit(0);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             send_to_session,
             nudge_session,
             read_session_text,
             jev_choose,
+            probe_decision,
+            decision_status,
             herdr_status,
             app_info,
             check_update,

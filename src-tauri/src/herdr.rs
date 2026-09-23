@@ -28,6 +28,8 @@ pub struct HerdrPane {
     pub cwd: String,
     pub title: String,
     pub interactive_ready: bool,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 pub fn discover_socket() -> Option<PathBuf> {
@@ -89,6 +91,27 @@ pub fn list_panes() -> Result<(String, Vec<HerdrPane>), String> {
             agents_by_pane.insert(id.to_string(), agent);
         }
     }
+    let mut size_by_pane = std::collections::HashMap::new();
+    if let Some(layouts) = snapshot.get("layouts").and_then(|v| v.as_array()) {
+        for layout in layouts {
+            let Some(panes) = layout.get("panes").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for pane in panes {
+                let Some(id) = pane.get("pane_id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let Some(rect) = pane.get("rect") else {
+                    continue;
+                };
+                let width = rect.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+                let height = rect.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+                if width > 0 && height > 0 {
+                    size_by_pane.insert(id.to_string(), (width as u16, height as u16));
+                }
+            }
+        }
+    }
 
     let mut panes = Vec::new();
     for wire in panes_wire {
@@ -123,6 +146,14 @@ pub fn list_panes() -> Result<(String, Vec<HerdrPane>), String> {
             .find_map(|k| wire.get(*k).and_then(|v| v.as_str()))
             .unwrap_or("")
             .to_string();
+        let (cols, rows) = size_by_pane.get(&pane_id).copied().unwrap_or_else(|| {
+            let rows = wire
+                .get("scroll")
+                .and_then(|v| v.get("viewport_rows"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(24) as u16;
+            (80, rows.max(8))
+        });
         panes.push(HerdrPane {
             pane_id,
             agent: kind.clone(),
@@ -134,6 +165,8 @@ pub fn list_panes() -> Result<(String, Vec<HerdrPane>), String> {
                 .get("interactive_ready")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+            cols,
+            rows,
         });
     }
     Ok((endpoint, panes))
@@ -147,7 +180,6 @@ pub fn read_pane(pane_id: &str) -> Result<String, String> {
         json!({
             "pane_id": pane_id,
             "source": "visible",
-            "lines": 80,
             "format": "ansi",
             "strip_ansi": false
         }),

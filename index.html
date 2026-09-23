@@ -9,15 +9,11 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
-    <div class="aurora" aria-hidden="true"></div>
-    <div class="noise" aria-hidden="true"></div>
-
     <div class="app rail-open" id="app">
       <aside class="rail" id="rail">
         <header class="brand">
           <div class="brand-mark">
             <img src="/src/assets/app-icon.png" class="brand-icon" alt="" />
-            <span class="spark" aria-hidden="true"></span>
           </div>
           <div>
             <h1>自动应答</h1>
@@ -56,14 +52,11 @@
             </div>
             <button type="button" id="toggle-rail" class="ghost">会话</button>
             <button type="button" id="toggle-plan" class="ghost">计划 <span id="queue-count" class="count-badge">0</span></button>
-            <button type="button" id="toggle-help" class="ghost">说明</button>
-            <button type="button" id="app-version" class="ghost version-btn" title="关于与更新">v0.1.0</button>
           </div>
         </header>
 
         <div class="panel preview-panel">
           <div class="term-chrome">
-            <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
             <span id="preview-hint" class="term-hint"></span>
             <span id="live-badge" class="live-badge">—</span>
           </div>
@@ -72,11 +65,35 @@
             <div id="term-host" class="term-host hidden"></div>
             <pre id="preview" class="preview hidden"></pre>
             <div id="preview-empty" class="preview-empty">
-              <img src="/src/assets/app-icon.png" alt="" />
-              <strong>选择会话</strong>
-              <span>从左侧点一个 pane</span>
+              <div class="idle-play">
+                <canvas id="idle-game" width="240" height="240" aria-label="贪吃蛇"></canvas>
+                <div class="idle-game-controls">
+                  <label>难度
+                    <select id="idle-difficulty">
+                      <option value="easy">简单</option>
+                      <option value="normal" selected>普通</option>
+                      <option value="hard">困难</option>
+                    </select>
+                  </label>
+                  <label>驱动
+                    <select id="idle-driver">
+                      <option value="manual">手动</option>
+                      <option value="jev" id="idle-driver-jev" disabled>Jev 未接入</option>
+                      <option value="laya" id="idle-driver-laya" disabled>Laya 未接入</option>
+                    </select>
+                  </label>
+                  <button id="idle-start" class="idle-start hidden" type="button">开始</button>
+                </div>
+                <div class="idle-game-meta">
+                  <strong id="idle-game-score">0</strong>
+                  <span id="idle-game-hint">方向键移动 · 选会话后停止</span>
+                </div>
+              </div>
+              <aside class="idle-game-log" aria-label="贪吃蛇日志">
+                <div class="idle-game-log-title">决策日志</div>
+                <div id="idle-game-log-list"></div>
+              </aside>
             </div>
-            <div class="scanlines" aria-hidden="true"></div>
           </div>
         </div>
 
@@ -94,7 +111,7 @@
 
       <aside class="drawer" id="plan-drawer">
         <div class="panel run-card">
-          <div class="panel-title">循环 <span id="plan-bound" class="count-badge">未绑定</span></div>
+          <div class="panel-title">执行 <span id="plan-bound" class="count-badge">未绑定</span></div>
           <div class="loop-meter">
             <div id="loop-bar" class="loop-bar"><i id="loop-bar-fill"></i></div>
             <span id="loop-status" class="loop-status">尚未开始</span>
@@ -104,49 +121,71 @@
             <button type="button" id="pause-loop" disabled>暂停</button>
             <button type="button" id="stop-loop" disabled>停止</button>
           </div>
-          <div class="run-opts">
-            <label class="chip-field">
-              整表
+
+          <section class="cfg">
+            <header>
+              <strong>循环</strong>
+              <span>空闲后发下一条</span>
+            </header>
+            <label class="cfg-row">
+              <span>循环次数</span>
               <input type="number" id="loop-rounds" min="1" max="99" value="1" />
-              次
+              <em>次</em>
             </label>
-            <label class="chip-field">
-              稳定
+            <label class="cfg-row">
+              <span>空闲稳定</span>
               <input type="number" id="idle-ms" min="1" max="30" value="2" />
-              秒
+              <em>秒</em>
             </label>
-            <label class="chip-field">
-              压缩 ≥
+            <label class="cfg-row">
+              <span>上下文达到</span>
               <input type="number" id="compact-at" min="10" max="95" value="70" />
-              %
+              <em>%</em>
             </label>
-            <label class="chip-field">
-              续跑
-              <input type="number" id="jev-max" min="1" max="8" value="3" />
-              次
-            </label>
-            <label class="chip-field">
-              决策
-              <select id="jev-provider">
-                <option value="jev">Jev</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="laya">Laya</option>
-              </select>
-            </label>
-            <label class="chip-field jev-base-field hidden" id="jev-base-wrap">
-              地址
-              <input type="text" id="jev-base" placeholder="http://127.0.0.1:8000" autocomplete="off" spellcheck="false" />
-            </label>
-            <label class="chip-field jev-key-field">
-              Key
-              <input type="password" id="jev-key" placeholder="TYPESAFE_API_KEY" autocomplete="off" spellcheck="false" />
-            </label>
-          </div>
-          <label class="toggle jev-toggle">
-            <input type="checkbox" id="jev-on" />
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span>Jev 续跑</span>
-          </label>
+            <p class="cfg-note">超过阈值会先压缩，再发下一条。</p>
+          </section>
+
+          <section class="cfg is-off" id="jev-cfg">
+            <header>
+              <strong>续跑</strong>
+              <label class="toggle">
+                <input type="checkbox" id="jev-on" />
+                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                <span>开启</span>
+              </label>
+            </header>
+            <p class="cfg-note">每轮结束后列出下一步，由决策模型选一项再发。</p>
+            <div class="cfg-body">
+              <label class="cfg-row">
+                <span>决策</span>
+                <select id="jev-provider">
+                  <option value="jev">Jev</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="laya">Laya</option>
+                </select>
+                <em></em>
+              </label>
+              <label class="cfg-row">
+                <span>最多</span>
+                <input type="number" id="jev-max" min="1" max="8" value="3" />
+                <em>次</em>
+              </label>
+            </div>
+            <div id="jev-run-state" class="run-state off">关闭</div>
+          </section>
+
+          <section class="cfg" id="commit-cfg">
+            <header>
+              <strong>提交</strong>
+              <label class="toggle">
+                <input type="checkbox" id="commit-after" checked />
+                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                <span>开启</span>
+              </label>
+            </header>
+            <p class="cfg-note">任务和续跑都结束后，再单独发一轮 git commit。不 push。</p>
+            <div id="commit-run-state" class="run-state">任务完成后提交</div>
+          </section>
         </div>
         <div class="panel plan-panel">
           <div class="panel-title">
@@ -156,11 +195,6 @@
               <button type="button" id="import-btn">导入</button>
             </span>
           </div>
-          <label class="toggle">
-            <input type="checkbox" id="commit-after" checked />
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span>完成后提交代码</span>
-          </label>
           <ol id="queue-list" class="queue-list">
             <li class="empty">还没有任务</li>
           </ol>
@@ -205,11 +239,82 @@
         </div>
       </div>
     </div>
+    <div id="keys-modal" class="guide hidden" role="dialog" aria-labelledby="keys-title">
+      <div class="guide-card keys-card">
+        <h2 id="keys-title">密钥设置</h2>
+        <p class="guide-lead">检查用的是当前输入，不必先保存。Key 留空时使用环境变量。地址留空用默认值。</p>
+        <section class="keys-block">
+          <div class="keys-title">
+            <strong>Jev</strong>
+            <span id="key-status-jev" class="key-status">未检查</span>
+            <button type="button" data-check="jev">检查</button>
+          </div>
+          <label>Key
+            <span class="key-line">
+              <input id="key-jev" type="password" placeholder="TYPESAFE_API_KEY" autocomplete="off" spellcheck="false" />
+              <button type="button" class="ghost" data-reveal="jev">显示</button>
+            </span>
+          </label>
+          <label>地址
+            <span class="key-line">
+              <input id="base-jev" type="url" placeholder="https://api.typesafe.ai" autocomplete="off" spellcheck="false" />
+              <button type="button" class="ghost" data-default="jev">默认</button>
+            </span>
+          </label>
+          <p id="key-note-jev" class="key-note"></p>
+        </section>
+        <section class="keys-block">
+          <div class="keys-title">
+            <strong>DeepSeek</strong>
+            <span id="key-status-deepseek" class="key-status">未检查</span>
+            <button type="button" data-check="deepseek">检查</button>
+          </div>
+          <label>Key
+            <span class="key-line">
+              <input id="key-deepseek" type="password" placeholder="DEEPSEEK_API_KEY" autocomplete="off" spellcheck="false" />
+              <button type="button" class="ghost" data-reveal="deepseek">显示</button>
+            </span>
+          </label>
+          <label>地址
+            <span class="key-line">
+              <input id="base-deepseek" type="url" placeholder="https://api.deepseek.com" autocomplete="off" spellcheck="false" />
+              <button type="button" class="ghost" data-default="deepseek">默认</button>
+            </span>
+          </label>
+          <p id="key-note-deepseek" class="key-note"></p>
+        </section>
+        <section class="keys-block">
+          <div class="keys-title">
+            <strong>Laya</strong>
+            <span id="key-status-laya" class="key-status">未检查</span>
+            <button type="button" data-check="laya">检查</button>
+          </div>
+          <label>Key
+            <span class="key-line">
+              <input id="key-laya" type="password" placeholder="LAYA_API_KEY，可空" autocomplete="off" spellcheck="false" />
+              <button type="button" class="ghost" data-reveal="laya">显示</button>
+            </span>
+          </label>
+          <label>地址
+            <span class="key-line">
+              <input id="base-laya" type="url" placeholder="http://127.0.0.1:8100" autocomplete="off" spellcheck="false" />
+              <button type="button" class="ghost" data-default="laya">默认</button>
+            </span>
+          </label>
+          <p id="key-note-laya" class="key-note"></p>
+        </section>
+        <p id="keys-foot" class="key-note"></p>
+        <div class="guide-actions">
+          <button type="button" id="keys-check-all">全部检查</button>
+          <button type="button" id="keys-save" class="primary">保存</button>
+          <button type="button" id="keys-close">关闭</button>
+        </div>
+      </div>
+    </div>
     <div id="usage-guide" class="guide hidden" role="dialog">
       <div class="guide-card">
-        <img src="/src/assets/app-icon.png" class="guide-icon" alt="" />
         <h2>怎么用</h2>
-        <p class="guide-lead">上边看终端，下边写话。计划、循环、提交都收在右侧抽屉里。</p>
+        <p class="guide-lead">左边选会话，中间看终端并发送。循环和计划在右侧。</p>
         <div class="how-list">
           <div class="how-item">
             <span>1</span>
@@ -236,7 +341,7 @@
             <span>4</span>
             <div>
               <strong>开始循环</strong>
-              <p>点「开始循环」：空闲后自动下一条。做完可单独再走一轮提交；上下文超过阈值会先压缩。执行中若连续 5 分钟画面差异不到 1%，会自动输入「继续」唤醒卡死的 CLI。打开「Jev 续跑」后，每轮会要求列出下一步，由 Jev、DeepSeek 或本地 Laya 选定一项再自动续跑。</p>
+              <p>空闲后自动发下一条。可选提交、压缩上下文。画面 5 分钟几乎不变会输入「继续」。打开自动续跑后，由 Jev、DeepSeek 或 Laya 选下一步。</p>
             </div>
           </div>
         </div>

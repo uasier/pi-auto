@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 type AgentSession = {
@@ -17,6 +17,8 @@ type AgentSession = {
   reason: string;
   preview: string;
   interactiveReady: boolean;
+  cols: number;
+  rows: number;
 };
 
 type TaskStatus = "pending" | "running" | "committing" | "done";
@@ -102,8 +104,9 @@ let pollTimer: number | null = null;
 let activeSheet: (typeof AGENT_ORDER)[number] = "pi";
 let importDraft: string[] = [];
 let term: Terminal | null = null;
-let termFit: FitAddon | null = null;
 let lastTermText = "";
+let lastTermCols = 0;
+let lastTermRows = 0;
 let lastListSig = "";
 let lastQueueSig = "";
 let lastHeadSig = "";
@@ -136,12 +139,12 @@ const commitAfterInput = () => $<HTMLInputElement>("commit-after");
 const compactAtInput = () => $<HTMLInputElement>("compact-at");
 const jevOnInput = () => $<HTMLInputElement>("jev-on");
 const jevMaxInput = () => $<HTMLInputElement>("jev-max");
-const jevKeyInput = () => $<HTMLInputElement>("jev-key");
 const jevProviderInput = () => $<HTMLSelectElement>("jev-provider");
-const jevBaseInput = () => $<HTMLInputElement>("jev-base");
 const JEV_KEY_STORAGE = "pi-auto-jev-key";
 const DEEPSEEK_KEY_STORAGE = "pi-auto-deepseek-key";
 const LAYA_KEY_STORAGE = "pi-auto-laya-key";
+const JEV_BASE_STORAGE = "pi-auto-jev-base";
+const DEEPSEEK_BASE_STORAGE = "pi-auto-deepseek-base";
 const JEV_PROVIDER_STORAGE = "pi-auto-jev-provider";
 const LAYA_BASE_STORAGE = "pi-auto-laya-base";
 const JEV_MIN_CONFIDENCE = 0.45;
@@ -408,27 +411,138 @@ function keyStorage(provider = jevProvider()) {
   return JEV_KEY_STORAGE;
 }
 
-function jevKey() {
-  return jevKeyInput().value.trim();
+function baseStorage(provider = jevProvider()) {
+  if (provider === "deepseek") return DEEPSEEK_BASE_STORAGE;
+  if (provider === "laya") return LAYA_BASE_STORAGE;
+  return JEV_BASE_STORAGE;
 }
 
-function syncDecisionFields() {
-  const provider = jevProvider();
-  jevKeyInput().value = localStorage.getItem(keyStorage(provider)) ?? "";
-  jevKeyInput().placeholder =
-    provider === "deepseek"
-      ? "DEEPSEEK_API_KEY"
-      : provider === "laya"
-        ? "LAYA_API_KEY，可空"
-        : "TYPESAFE_API_KEY";
-  $("jev-base-wrap").classList.toggle("hidden", provider !== "laya");
+function providerKey(provider = jevProvider()) {
+  return localStorage.getItem(keyStorage(provider))?.trim() || "";
 }
 
-function saveDecisionKey() {
-  const key = jevKey();
-  const storage = keyStorage();
-  if (key) localStorage.setItem(storage, key);
+function providerBase(provider = jevProvider()) {
+  return localStorage.getItem(baseStorage(provider))?.trim() || null;
+}
+
+function storeSetting(storage: string, value: string) {
+  const text = value.trim();
+  if (text) localStorage.setItem(storage, text);
   else localStorage.removeItem(storage);
+}
+
+const KEY_DEFAULTS: Record<DecisionProvider, string> = {
+  jev: "https://api.typesafe.ai",
+  deepseek: "https://api.deepseek.com",
+  laya: "http://127.0.0.1:8100",
+};
+const KEY_IDS: DecisionProvider[] = ["jev", "deepseek", "laya"];
+
+function keyInput(provider: DecisionProvider) {
+  return $<HTMLInputElement>(`key-${provider}`);
+}
+
+function baseInput(provider: DecisionProvider) {
+  return $<HTMLInputElement>(`base-${provider}`);
+}
+
+function setKeyStatus(provider: DecisionProvider, text: string, tone: "" | "ok" | "bad" = "") {
+  const status = $(`key-status-${provider}`);
+  status.textContent = text;
+  status.className = `key-status${tone ? ` ${tone}` : ""}`;
+}
+
+function setKeyNote(provider: DecisionProvider, text: string, tone: "" | "ok" | "bad" = "") {
+  const note = $(`key-note-${provider}`);
+  note.textContent = text;
+  note.className = `key-note${tone ? ` ${tone}` : ""}`;
+}
+
+function showKeys() {
+  keyInput("jev").value = localStorage.getItem(JEV_KEY_STORAGE) ?? "";
+  baseInput("jev").value = localStorage.getItem(JEV_BASE_STORAGE) ?? "";
+  keyInput("deepseek").value = localStorage.getItem(DEEPSEEK_KEY_STORAGE) ?? "";
+  baseInput("deepseek").value = localStorage.getItem(DEEPSEEK_BASE_STORAGE) ?? "";
+  keyInput("laya").value = localStorage.getItem(LAYA_KEY_STORAGE) ?? "";
+  baseInput("laya").value = localStorage.getItem(LAYA_BASE_STORAGE) ?? "";
+  for (const provider of KEY_IDS) {
+    setKeyStatus(provider, "未检查");
+    setKeyNote(provider, "");
+  }
+  $("keys-foot").textContent = "";
+  $("keys-modal").classList.remove("hidden");
+  keyInput("jev").focus();
+}
+
+function hideKeys() {
+  $("keys-modal").classList.add("hidden");
+}
+
+function saveKeys() {
+  storeSetting(JEV_KEY_STORAGE, keyInput("jev").value);
+  storeSetting(JEV_BASE_STORAGE, baseInput("jev").value);
+  storeSetting(DEEPSEEK_KEY_STORAGE, keyInput("deepseek").value);
+  storeSetting(DEEPSEEK_BASE_STORAGE, baseInput("deepseek").value);
+  storeSetting(LAYA_KEY_STORAGE, keyInput("laya").value);
+  storeSetting(LAYA_BASE_STORAGE, baseInput("laya").value);
+  $("keys-foot").textContent = "已保存。续跑和贪吃蛇会使用这份配置。";
+  $("keys-foot").className = "key-note ok";
+  log("已保存密钥设置");
+  void refreshGameBackends();
+}
+
+function formBase(provider: DecisionProvider) {
+  const value = baseInput(provider).value.trim();
+  if (!value) return null;
+  if (!/^https?:\/\//i.test(value)) return undefined;
+  return value;
+}
+
+async function checkProvider(provider: DecisionProvider) {
+  const base = formBase(provider);
+  if (base === undefined) {
+    setKeyStatus(provider, "地址无效", "bad");
+    setKeyNote(provider, "地址需要以 http:// 或 https:// 开头", "bad");
+    return;
+  }
+  const button = document.querySelector<HTMLButtonElement>(`[data-check="${provider}"]`);
+  if (button) button.disabled = true;
+  setKeyStatus(provider, "检查中");
+  setKeyNote(provider, "");
+  try {
+    const report = await invoke<{
+      ok: boolean;
+      message: string;
+      endpoint: string;
+      latencyMs: number;
+    }>("probe_decision", {
+      provider,
+      apiKey: keyInput(provider).value.trim() || null,
+      baseUrl: base,
+    });
+    setKeyStatus(provider, report.ok ? "可用" : "失败", report.ok ? "ok" : "bad");
+    const where = report.endpoint ? `${report.endpoint} · ` : "";
+    setKeyNote(
+      provider,
+      `${where}${report.message} · ${report.latencyMs}ms`,
+      report.ok ? "ok" : "bad",
+    );
+  } catch (error) {
+    setKeyStatus(provider, "失败", "bad");
+    setKeyNote(provider, String(error), "bad");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function checkAllProviders() {
+  const button = $<HTMLButtonElement>("keys-check-all");
+  button.disabled = true;
+  try {
+    await Promise.all(KEY_IDS.map((provider) => checkProvider(provider)));
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function suggestionLines(body: string) {
@@ -470,7 +584,22 @@ type JevDecision = {
   choice: string;
   confidence: number;
   continueNow: number;
+  endpoint?: string;
 };
+
+function logLaya(scope: string, detail: string, err = false) {
+  log(`Laya · ${scope} · ${detail}`, err);
+}
+
+function logSnake(detail: string, err = false) {
+  const box = $("idle-game-log-list");
+  const item = document.createElement("div");
+  item.className = `idle-log-item${err ? " err" : ""}`;
+  const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  item.innerHTML = `<span class="time">${time}</span>${escapeHtml(detail)}`;
+  box.prepend(item);
+  while (box.childElementCount > 80) box.removeChild(box.lastElementChild as Node);
+}
 
 async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskItem) {
   if (!plan.jev) return false;
@@ -501,18 +630,33 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
     tail,
   ].join("\n");
   let decision: JevDecision;
+  const provider = jevProvider();
+  const started = Date.now();
+  if (provider === "laya") {
+    logLaya(
+      session.paneId,
+      `请求 ${providerBase() || "默认地址"} · ${options.map((item) => item.id).join("/")}`,
+    );
+  }
   try {
-    const provider = jevProvider();
     decision = await invoke<JevDecision>("jev_choose", {
       provider,
-      apiKey: jevKey() || null,
-      baseUrl: provider === "laya" ? jevBaseInput().value.trim() || null : null,
+      apiKey: providerKey() || null,
+      baseUrl: providerBase(),
       state,
       options,
     });
   } catch (error) {
-    log(`${session.paneId} ${providerLabel()} 决策失败，结束续跑：${error}`, true);
+    if (provider === "laya") logLaya(session.paneId, `失败 ${error}`, true);
+    else log(`${session.paneId} ${providerLabel()} 决策失败，结束续跑：${error}`, true);
     return false;
+  }
+  if (provider === "laya") {
+    const pct = (value: number) => `${Math.round(value * 100)}%`;
+    logLaya(
+      session.paneId,
+      `${decision.endpoint ?? ""} · ${decision.choice} · 置信 ${pct(decision.confidence)} · 继续 ${pct(decision.continueNow)} · ${Date.now() - started}ms`,
+    );
   }
   const picked = options.find((item) => item.id === decision.choice);
   const pct = (value: number) => `${Math.round(value * 100)}%`;
@@ -627,6 +771,7 @@ function renderLoopStatus() {
   if (!plan) {
     $("loop-bar-fill").style.width = "0%";
     $("loop-status").textContent = "先选会话";
+    syncExecPanels();
     return;
   }
   const totalRounds = loopRounds(plan);
@@ -638,7 +783,7 @@ function renderLoopStatus() {
   fill.style.width = `${pct}%`;
   if (!plan.planRunning) {
     $("loop-status").textContent = total
-      ? `${total} 条 × ${totalRounds} 轮`
+      ? `${total} 条 · 循环 ${totalRounds} 次`
       : "空";
     return;
   }
@@ -653,10 +798,36 @@ function renderLoopStatus() {
         : pending
           ? "等待空闲"
           : "本轮收尾";
-  const jevBit = plan.jev ? ` · Jev ${plan.jevRuns}/${plan.jevMax}` : "";
   $("loop-status").textContent =
-    `${plan.currentRound}/${totalRounds} · ${done}/${total} · ${now}${jevBit}` +
+    `第 ${plan.currentRound}/${totalRounds} 次 · 完成 ${done}/${total} · ${now}` +
     (cur ? ` · ${cur.title}` : "");
+  syncExecPanels();
+}
+
+function setRunState(id: string, text: string, cls: "off" | "on" | "busy") {
+  const el = $(id);
+  el.textContent = text;
+  el.className = `run-state ${cls}`;
+}
+
+function syncExecPanels() {
+  const plan = activePlan();
+  const jevOn = jevOnInput().checked;
+  $("jev-cfg").classList.toggle("is-off", !jevOn);
+  $("commit-cfg").classList.toggle("is-off", !commitAfterInput().checked);
+  if (!plan || !jevOn) {
+    setRunState("jev-run-state", "关闭", "off");
+  } else if (!plan.planRunning) {
+    setRunState("jev-run-state", `就绪 · ${providerLabel()} · 最多 ${plan.jevMax} 次`, "on");
+  } else if (plan.jevRuns > 0) {
+    setRunState("jev-run-state", `续跑中 ${plan.jevRuns}/${plan.jevMax} · ${providerLabel()}`, "busy");
+  } else {
+    setRunState("jev-run-state", `本轮结束后由 ${providerLabel()} 选择`, "on");
+  }
+  const committing = !!plan?.tasks.some((task) => task.status === "committing");
+  if (!plan?.commitAfter) setRunState("commit-run-state", "关闭", "off");
+  else if (committing) setRunState("commit-run-state", "正在提交，不 push", "busy");
+  else setRunState("commit-run-state", "任务和续跑结束后提交", "on");
 }
 
 function groupedSessions() {
@@ -824,63 +995,498 @@ function renderQueue(force = false) {
   renderLoopStatus();
 }
 
+function clampScreen(value: number, fallback: number, min: number, max: number) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function scaleTerm() {
+  if (!term) return;
+  const host = $("term-host");
+  const screen = host.querySelector(".xterm") as HTMLElement | null;
+  if (!screen || host.classList.contains("hidden")) return;
+  screen.style.transform = "none";
+  const naturalW = screen.offsetWidth;
+  const naturalH = screen.offsetHeight;
+  const availW = host.clientWidth - 16;
+  const availH = host.clientHeight - 16;
+  if (naturalW < 8 || naturalH < 8 || availW < 8 || availH < 8) return;
+  const scale = Math.min(availW / naturalW, availH / naturalH);
+  if (scale > 0.97 && scale < 1.03) return;
+  const current = term.options.fontSize || 14;
+  const next = Math.max(5, Math.round(current * scale));
+  if (next === current) return;
+  term.options.fontSize = next;
+}
+
 function ensureTerm() {
   if (term) return term;
   term = new Terminal({
-    convertEol: true,
+    convertEol: false,
     disableStdin: true,
     fontFamily: '"SF Mono", Menlo, ui-monospace, monospace',
-    fontSize: 12,
-    lineHeight: 1.25,
+    fontSize: 14,
+    lineHeight: 1,
     cursorBlink: false,
     cursorInactiveStyle: "none",
-    scrollback: 2000,
+    scrollback: 0,
     theme: {
-      background: "#0b0805",
-      foreground: "#f6e3b0",
-      cursor: "#ffd34e",
-      black: "#1a140c",
-      red: "#ff7a6e",
-      green: "#7dce82",
-      yellow: "#ffd34e",
-      blue: "#8bb4ff",
-      magenta: "#b794f6",
-      cyan: "#3dd6c6",
-      white: "#fff4d6",
-      brightBlack: "#6a542c",
-      brightRed: "#ff9b90",
-      brightGreen: "#9be7a0",
-      brightYellow: "#ffe27a",
-      brightBlue: "#adc6ff",
-      brightMagenta: "#d0b8ff",
-      brightCyan: "#7eefe3",
-      brightWhite: "#fffaf0",
+      background: "#0a0c10",
+      foreground: "#d5dbe4",
+      cursor: "#d5dbe4",
+      black: "#15181e",
+      red: "#c98b86",
+      green: "#86a892",
+      yellow: "#c6b48a",
+      blue: "#8aa4c2",
+      magenta: "#a99bc4",
+      cyan: "#7eaea6",
+      white: "#d5dbe4",
+      brightBlack: "#6d7582",
+      brightRed: "#dba8a4",
+      brightGreen: "#a4c2ad",
+      brightYellow: "#d8c7a8",
+      brightBlue: "#a9bdd4",
+      brightMagenta: "#c4b8d8",
+      brightCyan: "#a4ccc6",
+      brightWhite: "#e7ebf2",
     },
   });
-  termFit = new FitAddon();
-  term.loadAddon(termFit);
   term.open($("term-host"));
-  termFit.fit();
   const host = $("term-host");
-  const observer = new ResizeObserver(() => termFit?.fit());
+  const observer = new ResizeObserver(() => scaleTerm());
   observer.observe(host);
+  term.onRender(() => scaleTerm());
   return term;
 }
 
-function writeTerm(ansi: string) {
+function writeTerm(ansi: string, cols: number, rows: number) {
   const host = $("term-host");
   host.classList.remove("hidden");
   $("preview").classList.add("hidden");
   const t = ensureTerm();
-  if (ansi === lastTermText) return;
-  lastTermText = ansi;
-  const payload = ansi.replace(/\n/g, "\r\n");
-  t.write(`\x1b[?2026h\x1b[H\x1b[J${payload}\x1b[?2026l`);
+  const nextCols = clampScreen(cols, 80, 20, 400);
+  const nextRows = clampScreen(rows, 24, 8, 200);
+  const sizeChanged = nextCols !== lastTermCols || nextRows !== lastTermRows;
+  if (sizeChanged) {
+    t.resize(nextCols, nextRows);
+    lastTermCols = nextCols;
+    lastTermRows = nextRows;
+  }
+  if (ansi !== lastTermText || sizeChanged) {
+    lastTermText = ansi;
+    const payload = ansi.replace(/\n/g, "\r\n");
+    t.write(`\x1b[0m\x1b[H\x1b[2J\x1b[3J${payload}`);
+  }
+  requestAnimationFrame(scaleTerm);
 }
 
 function hideTerm() {
   $("term-host").classList.add("hidden");
   lastTermText = "";
+}
+
+type Cell = { x: number; y: number };
+type SnakeDriver = "manual" | "jev" | "laya";
+type SnakeLevel = "easy" | "normal" | "hard";
+const SNAKE_GRID = 15;
+const SNAKE_CELL = 16;
+const SNAKE_SPEED: Record<SnakeLevel, number> = { easy: 240, normal: 150, hard: 85 };
+const SNAKE_LEVEL_KEY = "pi-auto-snake-level";
+const SNAKE_DRIVER_KEY = "pi-auto-snake-driver";
+let snakeTimer: number | null = null;
+let snakeProbe: number | null = null;
+let snakeBody: Cell[] = [];
+let snakeDir: Cell = { x: 1, y: 0 };
+let snakeNext: Cell = { x: 1, y: 0 };
+let snakeFood: Cell = { x: 7, y: 7 };
+let snakeScore = 0;
+let snakeOver = false;
+let snakeEpoch = 0;
+let snakeShown = false;
+let snakeAiBusy = false;
+let snakeRunning = false;
+let gameBackends = { jev: false, laya: false };
+let gameLayaBase = "http://127.0.0.1:8100";
+let snakeSteerNote = "";
+
+function snakeLevel(): SnakeLevel {
+  const value = $<HTMLSelectElement>("idle-difficulty").value;
+  return value === "easy" || value === "hard" ? value : "normal";
+}
+
+function snakeDriver(): SnakeDriver {
+  const value = $<HTMLSelectElement>("idle-driver").value;
+  return value === "jev" || value === "laya" ? value : "manual";
+}
+
+function placeSnakeFood() {
+  const used = new Set(snakeBody.map((cell) => `${cell.x},${cell.y}`));
+  const open: Cell[] = [];
+  for (let y = 0; y < SNAKE_GRID; y += 1) {
+    for (let x = 0; x < SNAKE_GRID; x += 1) {
+      if (!used.has(`${x},${y}`)) open.push({ x, y });
+    }
+  }
+  snakeFood = open[Math.floor(Math.random() * open.length)] ?? { x: 0, y: 0 };
+}
+
+function resetSnake() {
+  snakeBody = [
+    { x: 4, y: 7 },
+    { x: 3, y: 7 },
+    { x: 2, y: 7 },
+  ];
+  snakeDir = { x: 1, y: 0 };
+  snakeNext = snakeDir;
+  snakeScore = 0;
+  snakeOver = false;
+  placeSnakeFood();
+  drawSnake();
+}
+
+function drawSnake() {
+  const canvas = $<HTMLCanvasElement>("idle-game");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const size = SNAKE_GRID * SNAKE_CELL;
+  if (canvas.width !== size * dpr) {
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0a0c10";
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "#c98b86";
+  ctx.fillRect(snakeFood.x * SNAKE_CELL + 4, snakeFood.y * SNAKE_CELL + 4, SNAKE_CELL - 8, SNAKE_CELL - 8);
+  snakeBody.forEach((cell, index) => {
+    ctx.fillStyle = index === 0 ? "#e7ebf2" : "#7eaea6";
+    ctx.fillRect(cell.x * SNAKE_CELL + 2, cell.y * SNAKE_CELL + 2, SNAKE_CELL - 4, SNAKE_CELL - 4);
+  });
+  $("idle-game-score").textContent = snakeOver ? `${snakeScore} · 点开始重来` : String(snakeScore);
+  const driver = $<HTMLSelectElement>("idle-driver").value;
+  const driving = driver === "jev" || driver === "laya";
+  $("idle-game-hint").textContent = snakeSteerNote
+    ? snakeSteerNote
+    : driving
+      ? `${driver === "laya" ? "Laya" : "Jev"} 控制 · 收到决策才移动`
+      : "方向键移动 · 选会话后停止";
+  syncStartButton();
+}
+
+function waitingToStart() {
+  return !snakeRunning || snakeOver;
+}
+
+function syncStartButton() {
+  const button = $<HTMLButtonElement>("idle-start");
+  const driver = snakeDriver();
+  button.classList.toggle("hidden", !waitingToStart());
+  button.disabled = (driver === "jev" && !gameBackends.jev) || (driver === "laya" && !gameBackends.laya);
+}
+
+function beginGame() {
+  const driver = snakeDriver();
+  if (driver === "jev" && !gameBackends.jev) return;
+  if (driver === "laya" && !gameBackends.laya) return;
+  snakeRunning = true;
+  resetSnake();
+  startControlLoop();
+}
+
+const SNAKE_ASK_FRUIT =
+  "两个目标：第一是吃到果子，第二才是不要死。这些方向都不会死。选吃到果子的；没有就选移动后距离最小的。距离相同就保持当前朝向。不要为了绕路而选更远的。";
+const SNAKE_ASK_LIVE =
+  "两个目标：第一是吃到果子，第二才是不要死。靠近果子的方向这一步都会死。在这些不会死的方向里，选离果子最近的，方便下一步再去吃。不要无意义绕远。";
+
+function dirName(dir: Cell) {
+  if (dir.x === 1) return "右";
+  if (dir.x === -1) return "左";
+  if (dir.y === 1) return "下";
+  return "上";
+}
+
+function foodSide(dx: number, dy: number) {
+  const horizontal = dx === 0 ? "" : dx > 0 ? `右 ${dx}` : `左 ${-dx}`;
+  const vertical = dy === 0 ? "" : dy > 0 ? `下 ${dy}` : `上 ${-dy}`;
+  return [horizontal, vertical].filter(Boolean).join("、") || "已重合";
+}
+
+function snakeState(chasing: boolean) {
+  const head = snakeBody[0];
+  const dx = snakeFood.x - head.x;
+  const dy = snakeFood.y - head.y;
+  return [
+    "贪吃蛇有两个目标：先吃到果子，同时不要死。不能只保命。",
+    "x 向右增大，y 向下增大。上 = y-1，下 = y+1，左 = x-1，右 = x+1。",
+    `头在 (${head.x},${head.y})，当前朝向${dirName(snakeDir)}。`,
+    `果子在 (${snakeFood.x},${snakeFood.y})，位于头的${foodSide(dx, dy)}。`,
+    `当前曼哈顿距离 ${Math.abs(dx) + Math.abs(dy)}。`,
+    chasing
+      ? "下面每个方向都不会死，而且都在靠近或吃到果子。选距离最小的。"
+      : "靠近果子的方向这一步都会死。下面都是不会死的方向，选离果子最近的，下一步再去吃。",
+  ].join("\n");
+}
+
+type SnakeMove = {
+  id: "up" | "down" | "left" | "right";
+  dir: Cell;
+  dist: number;
+  eats: boolean;
+  closer: boolean;
+};
+
+function candidateMoves(): SnakeMove[] {
+  const head = snakeBody[0];
+  const tail = snakeBody[snakeBody.length - 1];
+  const now = Math.abs(snakeFood.x - head.x) + Math.abs(snakeFood.y - head.y);
+  const dirs = [
+    { id: "up" as const, dir: { x: 0, y: -1 } },
+    { id: "down" as const, dir: { x: 0, y: 1 } },
+    { id: "left" as const, dir: { x: -1, y: 0 } },
+    { id: "right" as const, dir: { x: 1, y: 0 } },
+  ];
+  return dirs
+    .filter((move) => move.dir.x !== -snakeDir.x || move.dir.y !== -snakeDir.y)
+    .map((move) => {
+      const x = head.x + move.dir.x;
+      const y = head.y + move.dir.y;
+      const wall = x < 0 || y < 0 || x >= SNAKE_GRID || y >= SNAKE_GRID;
+      const body = snakeBody.some(
+        (cell, index) =>
+          cell.x === x &&
+          cell.y === y &&
+          !(index === snakeBody.length - 1 && tail.x === x && tail.y === y),
+      );
+      const dist = Math.abs(snakeFood.x - x) + Math.abs(snakeFood.y - y);
+      return {
+        id: move.id,
+        dir: move.dir,
+        dist,
+        eats: x === snakeFood.x && y === snakeFood.y,
+        closer: dist < now,
+        blocked: wall || body,
+      };
+    })
+    .filter((move) => !move.blocked)
+    .map(({ id, dir, dist, eats, closer }) => ({ id, dir, dist, eats, closer }));
+}
+
+function movesForDecision() {
+  const safe = candidateMoves();
+  const chasing = safe.filter((move) => move.eats || move.closer);
+  return {
+    chasing: chasing.length > 0,
+    moves: chasing.length > 0 ? chasing : safe,
+  };
+}
+
+function describeMove(move: SnakeMove) {
+  const head = snakeBody[0];
+  const x = head.x + move.dir.x;
+  const y = head.y + move.dir.y;
+  const now = Math.abs(snakeFood.x - head.x) + Math.abs(snakeFood.y - head.y);
+  const delta = move.dist - now;
+  const fruit = move.eats ? "这一步吃到果子" : delta < 0 ? `靠近果子，距离 ${move.dist}，近 ${-delta}` : `暂时吃不到，距离 ${move.dist}`;
+  const live = "不会死";
+  const same = move.dir.x === snakeDir.x && move.dir.y === snakeDir.y ? "，与当前朝向相同" : "";
+  return `走到 (${x},${y})。${fruit}。${live}${same}`;
+}
+
+function applyStep(dir: Cell) {
+  if (snakeOver || snakeBody.length === 0) return;
+  snakeDir = dir;
+  snakeNext = dir;
+  const head = { x: snakeBody[0].x + dir.x, y: snakeBody[0].y + dir.y };
+  const hitWall = head.x < 0 || head.y < 0 || head.x >= SNAKE_GRID || head.y >= SNAKE_GRID;
+  const hitSelf = snakeBody.some((cell) => cell.x === head.x && cell.y === head.y);
+  if (hitWall || hitSelf) {
+    snakeOver = true;
+    snakeRunning = false;
+    drawSnake();
+    return;
+  }
+  snakeBody.unshift(head);
+  if (head.x === snakeFood.x && head.y === snakeFood.y) {
+    snakeScore += 1;
+    placeSnakeFood();
+  } else {
+    snakeBody.pop();
+  }
+  drawSnake();
+}
+
+async function aiTurn(epoch: number) {
+  const driver = snakeDriver();
+  if (!snakeRunning || driver === "manual" || snakeOver || epoch !== snakeEpoch) return;
+  if (snakeAiBusy) {
+    window.setTimeout(() => void aiTurn(epoch), 200);
+    return;
+  }
+  const plan = movesForDecision();
+  const moves = plan.moves;
+  if (moves.length === 0) {
+    snakeOver = true;
+    snakeRunning = false;
+    snakeSteerNote = "无路可走";
+    drawSnake();
+    return;
+  }
+  snakeAiBusy = true;
+  snakeSteerNote = `等待 ${driver === "laya" ? "Laya" : "Jev"}，蛇停住`;
+  drawSnake();
+  const started = Date.now();
+  logSnake(
+    `${plan.chasing ? "吃果子" : "先保命再吃"} · ${moves.map((move) => `${move.id}:${move.dist}`).join(" ")}`,
+  );
+  try {
+    const decision = await invoke<JevDecision>("jev_choose", {
+      provider: driver,
+      apiKey: localStorage.getItem(keyStorage(driver))?.trim() || null,
+      baseUrl: providerBase(driver),
+      state: snakeState(plan.chasing),
+      options: moves.map((move) => ({ id: move.id, text: describeMove(move) })),
+      instructions: plan.chasing ? SNAKE_ASK_FRUIT : SNAKE_ASK_LIVE,
+      includeStop: false,
+    });
+    if (epoch !== snakeEpoch || snakeOver || $("preview-empty").classList.contains("hidden")) return;
+    const picked = moves.find((move) => move.id === decision.choice);
+    snakeSteerNote = "";
+    logSnake(
+      `${decision.endpoint ?? (driver === "laya" ? gameLayaBase : "Jev")} · ${decision.choice} · 距离 ${picked?.dist ?? "?"} · 置信 ${Math.round(decision.confidence * 100)}% · ${Date.now() - started}ms`,
+    );
+    applyStep((picked ?? moves.slice().sort((a, b) => a.dist - b.dist)[0]).dir);
+  } catch (error) {
+    if (epoch !== snakeEpoch) return;
+    snakeSteerNote = `${driver === "laya" ? "Laya" : "Jev"} 决策失败，正在重试`;
+    logSnake(`失败 ${error}`, true);
+    drawSnake();
+    if (snakeDriver() !== "manual") window.setTimeout(() => void aiTurn(epoch), 600);
+    return;
+  } finally {
+    snakeAiBusy = false;
+  }
+  if (!snakeOver && epoch === snakeEpoch && snakeDriver() !== "manual") queueAiTurn();
+}
+
+function queueAiTurn() {
+  if (snakeAiBusy || !snakeRunning || snakeDriver() === "manual") return;
+  const epoch = snakeEpoch;
+  window.setTimeout(() => void aiTurn(epoch), 30);
+}
+
+async function refreshGameBackends() {
+  const localJev = Boolean(localStorage.getItem(JEV_KEY_STORAGE)?.trim());
+  const layaBase = providerBase("laya") || "";
+  try {
+    const status = await invoke<{ jev: boolean; laya: boolean; layaBase?: string | null }>(
+      "decision_status",
+      { layaBase: layaBase || null },
+    );
+    gameBackends = { jev: localJev || status.jev, laya: status.laya };
+    if (status.layaBase) {
+      gameLayaBase = status.layaBase;
+      const saved = localStorage.getItem(LAYA_BASE_STORAGE) ?? "";
+      if (!saved || saved.includes(":8000")) {
+        localStorage.setItem(LAYA_BASE_STORAGE, status.layaBase);
+      }
+    }
+  } catch {
+    gameBackends = { jev: localJev, laya: false };
+  }
+  const jevOpt = $<HTMLOptionElement>("idle-driver-jev");
+  const layaOpt = $<HTMLOptionElement>("idle-driver-laya");
+  jevOpt.disabled = !gameBackends.jev;
+  layaOpt.disabled = !gameBackends.laya;
+  jevOpt.textContent = gameBackends.jev ? "Jev" : "Jev 未接入";
+  layaOpt.textContent = gameBackends.laya ? "Laya" : "Laya 未接入";
+  drawSnake();
+  if (!$("preview-empty").classList.contains("hidden") && snakeDriver() !== "manual" && snakeTimer != null) {
+    startControlLoop();
+  }
+}
+
+function stepSnake() {
+  applyStep(snakeNext);
+}
+
+function startControlLoop() {
+  snakeEpoch += 1;
+  if (snakeTimer != null) {
+    window.clearInterval(snakeTimer);
+    snakeTimer = null;
+  }
+  if (!snakeRunning) {
+    snakeSteerNote = "点开始";
+    drawSnake();
+    return;
+  }
+  if (snakeDriver() === "manual") {
+    snakeSteerNote = "";
+    snakeTimer = window.setInterval(stepSnake, SNAKE_SPEED[snakeLevel()]);
+    drawSnake();
+    return;
+  }
+  snakeSteerNote = `等待 ${snakeDriver() === "laya" ? "Laya" : "Jev"}，蛇停住`;
+  drawSnake();
+  queueAiTurn();
+}
+
+function showIdleGame() {
+  if (snakeShown) return;
+  snakeShown = true;
+  resetSnake();
+  startControlLoop();
+  void refreshGameBackends();
+  if (snakeProbe == null) snakeProbe = window.setInterval(() => void refreshGameBackends(), 8000);
+}
+
+function hideIdleGame() {
+  snakeShown = false;
+  snakeEpoch += 1;
+  if (snakeTimer != null) {
+    window.clearInterval(snakeTimer);
+    snakeTimer = null;
+  }
+  if (snakeProbe != null) {
+    window.clearInterval(snakeProbe);
+    snakeProbe = null;
+  }
+}
+
+function onIdleGameKey(event: KeyboardEvent) {
+  if ($("preview-empty").classList.contains("hidden")) return;
+  const tag = (event.target as HTMLElement | null)?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  const turn: Record<string, Cell> = {
+    ArrowUp: { x: 0, y: -1 },
+    ArrowDown: { x: 0, y: 1 },
+    ArrowLeft: { x: -1, y: 0 },
+    ArrowRight: { x: 1, y: 0 },
+    w: { x: 0, y: -1 },
+    s: { x: 0, y: 1 },
+    a: { x: -1, y: 0 },
+    d: { x: 1, y: 0 },
+  };
+  const next = turn[event.key];
+  if (next) {
+    event.preventDefault();
+    if (waitingToStart()) return;
+    if (next.x === -snakeDir.x && next.y === -snakeDir.y) return;
+    if (snakeDriver() === "manual") {
+      snakeNext = next;
+      return;
+    }
+    snakeEpoch += 1;
+    applyStep(next);
+    if (!snakeOver) queueAiTurn();
+    return;
+  }
+  if ((event.key === " " || event.key === "Enter") && waitingToStart()) {
+    event.preventDefault();
+    beginGame();
+  }
 }
 
 function renderMain() {
@@ -919,9 +1525,11 @@ function renderMain() {
     empty.classList.remove("hidden");
     hideTerm();
     if (pre.textContent) pre.textContent = "";
+    showIdleGame();
     return;
   }
 
+  hideIdleGame();
   empty.classList.add("hidden");
   if (headChanged) {
     $("target-kicker").textContent = session.agentLabel;
@@ -941,7 +1549,7 @@ function renderMain() {
     pre.textContent = "暂无 pane 画面";
     return;
   }
-  writeTerm(nextText);
+  writeTerm(nextText, session.cols, session.rows);
 }
 
 function renderAll() {
@@ -1086,11 +1694,11 @@ function startLoop() {
   plan.needCompact = true;
   armStallWatch(session);
   lastQueueSig = "";
-  if (plan.jev && jevProvider() !== "laya" && !jevKey()) {
+  if (plan.jev && jevProvider() !== "laya" && !providerKey()) {
     log(`${session.paneId} 已开启续跑，但没有 ${providerLabel()} API Key。决策时会跳过续跑`, true);
   }
   log(
-    `${session.paneId} 开始循环：${plan.tasks.length} 条 × ${loopRounds(plan)} 次${plan.jev ? ` · ${providerLabel()} 续跑` : ""}`,
+    `${session.paneId} 开始循环：${plan.tasks.length} 条 · 循环 ${loopRounds(plan)} 次${plan.jev ? ` · ${providerLabel()} 续跑` : ""}`,
   );
   setAppTheme(session.agent);
   syncRunButtons();
@@ -1209,7 +1817,6 @@ function hideAbout() {
 
 function renderAbout() {
   const current = appInfo?.version ?? updateInfo?.currentVersion ?? "0.1.0";
-  $("app-version").textContent = `v${current}`;
   $("about-current").textContent = `v${current}`;
   $("about-latest").textContent = updateInfo ? `v${updateInfo.latestVersion}` : "尚未检查";
   $("about-status").textContent = updateChecking
@@ -1281,7 +1888,6 @@ async function runUpdateCheck(force: boolean, quiet: boolean) {
 async function loadAppInfo() {
   try {
     appInfo = await invoke<AppInfo>("app_info");
-    $("app-version").textContent = `v${appInfo.version}`;
     $("about-current").textContent = `v${appInfo.version}`;
   } catch {
     /* ignore */
@@ -1590,9 +2196,15 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   $("herdr-guide-btn").addEventListener("click", () => showHerdrGuide());
   $("herdr-guide-close").addEventListener("click", () => hideHerdrGuide());
-  $("toggle-help").addEventListener("click", () => showUsageGuide());
-  $("app-version").addEventListener("click", () => showAbout());
   $("about-close").addEventListener("click", () => hideAbout());
+  void listen<string>("app-menu", (event) => {
+    if (event.payload === "ai-keys") showKeys();
+    if (event.payload === "usage") showUsageGuide();
+    if (event.payload === "check-update") {
+      showAbout();
+      void runUpdateCheck(true, false);
+    }
+  });
   $("check-update").addEventListener("click", () => {
     void runUpdateCheck(true, false);
   });
@@ -1664,17 +2276,71 @@ window.addEventListener("DOMContentLoaded", () => {
   jevOnInput().addEventListener("change", persistPlanInputs);
   jevMaxInput().addEventListener("change", persistPlanInputs);
   jevProviderInput().value = localStorage.getItem(JEV_PROVIDER_STORAGE) ?? "jev";
-  jevBaseInput().value = localStorage.getItem(LAYA_BASE_STORAGE) ?? "http://127.0.0.1:8000";
-  syncDecisionFields();
   jevProviderInput().addEventListener("change", () => {
     localStorage.setItem(JEV_PROVIDER_STORAGE, jevProvider());
-    syncDecisionFields();
+    syncExecPanels();
   });
-  jevKeyInput().addEventListener("change", saveDecisionKey);
-  jevBaseInput().addEventListener("change", () => {
-    localStorage.setItem(LAYA_BASE_STORAGE, jevBaseInput().value.trim());
+  $("keys-save").addEventListener("click", saveKeys);
+  $("keys-close").addEventListener("click", hideKeys);
+  $("keys-check-all").addEventListener("click", () => void checkAllProviders());
+  $("keys-modal").addEventListener("click", (event) => {
+    if (event.target === $("keys-modal")) hideKeys();
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-check]").forEach((button) => {
+    button.addEventListener("click", () => void checkProvider(button.dataset.check as DecisionProvider));
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-reveal]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = keyInput(button.dataset.reveal as DecisionProvider);
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      button.textContent = hidden ? "隐藏" : "显示";
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-default]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const provider = button.dataset.default as DecisionProvider;
+      baseInput(provider).value = KEY_DEFAULTS[provider];
+      setKeyStatus(provider, "未检查");
+      setKeyNote(provider, "");
+    });
+  });
+  for (const provider of KEY_IDS) {
+    const mark = () => {
+      setKeyStatus(provider, "未检查");
+      setKeyNote(provider, "");
+    };
+    keyInput(provider).addEventListener("input", mark);
+    baseInput(provider).addEventListener("input", mark);
+  }
+  window.addEventListener("keydown", (event) => {
+    if ($("keys-modal").classList.contains("hidden")) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      hideKeys();
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      saveKeys();
+    }
   });
   syncRunButtons();
+  window.addEventListener("keydown", onIdleGameKey);
+  const level = $<HTMLSelectElement>("idle-difficulty");
+  const driver = $<HTMLSelectElement>("idle-driver");
+  level.value = localStorage.getItem(SNAKE_LEVEL_KEY) ?? "normal";
+  driver.value = localStorage.getItem(SNAKE_DRIVER_KEY) ?? "manual";
+  level.addEventListener("change", () => {
+    localStorage.setItem(SNAKE_LEVEL_KEY, snakeLevel());
+    if (!$("preview-empty").classList.contains("hidden")) startControlLoop();
+  });
+  driver.addEventListener("change", () => {
+    localStorage.setItem(SNAKE_DRIVER_KEY, driver.value);
+    snakeRunning = false;
+    if (!$("preview-empty").classList.contains("hidden")) startControlLoop();
+  });
+  $("idle-start").addEventListener("click", beginGame);
+  showIdleGame();
 
   log("已启动");
   void loadAppInfo().then(() => maybeCheckUpdate());
