@@ -1196,9 +1196,9 @@ function beginGame() {
 }
 
 const SNAKE_ASK_FRUIT =
-  "两个目标：第一是吃到果子，第二才是不要死。这些方向都不会死。选吃到果子的；没有就选移动后距离最小的。距离相同就保持当前朝向。不要为了绕路而选更远的。";
+  "两个目标：第一是吃到果子，第二才是不要死。蛇头不能碰到蛇身，碰到就是失败。这些方向都不会碰到蛇身或墙。选吃到果子的；没有就选移动后距离最小的。距离相同就保持当前朝向。";
 const SNAKE_ASK_LIVE =
-  "两个目标：第一是吃到果子，第二才是不要死。靠近果子的方向这一步都会死。在这些不会死的方向里，选离果子最近的，方便下一步再去吃。不要无意义绕远。";
+  "两个目标：第一是吃到果子，第二才是不要死。蛇头不能碰到蛇身，碰到就是失败。靠近果子的方向这一步都会碰到蛇身或墙。在这些不会死的方向里，选离果子最近的。";
 
 function dirName(dir: Cell) {
   if (dir.x === 1) return "右";
@@ -1213,19 +1213,60 @@ function foodSide(dx: number, dy: number) {
   return [horizontal, vertical].filter(Boolean).join("、") || "已重合";
 }
 
+function bodyCells() {
+  return snakeBody.map((cell, index) => `${index === 0 ? "头" : `身${index}`}(${cell.x},${cell.y})`).join(" ");
+}
+
+function boardMap() {
+  const rows: string[] = [];
+  for (let y = 0; y < SNAKE_GRID; y += 1) {
+    let line = "";
+    for (let x = 0; x < SNAKE_GRID; x += 1) {
+      if (x === snakeBody[0]?.x && y === snakeBody[0]?.y) line += "H";
+      else if (snakeBody.some((cell) => cell.x === x && cell.y === y)) line += "o";
+      else if (x === snakeFood.x && y === snakeFood.y) line += "*";
+      else line += ".";
+    }
+    rows.push(line);
+  }
+  return rows.join("\n");
+}
+
+function stepFate(dir: Cell) {
+  const head = snakeBody[0];
+  const x = head.x + dir.x;
+  const y = head.y + dir.y;
+  if (x < 0 || y < 0 || x >= SNAKE_GRID || y >= SNAKE_GRID) return "撞墙，失败";
+  if (snakeBody.some((cell) => cell.x === x && cell.y === y)) return "碰到蛇身，失败";
+  if (x === snakeFood.x && y === snakeFood.y) return "吃到果子，不会死";
+  const dist = Math.abs(snakeFood.x - x) + Math.abs(snakeFood.y - y);
+  return `不会死，移动后距离 ${dist}`;
+}
+
 function snakeState(chasing: boolean) {
   const head = snakeBody[0];
   const dx = snakeFood.x - head.x;
   const dy = snakeFood.y - head.y;
+  const dirs = [
+    { name: "上", dir: { x: 0, y: -1 } },
+    { name: "下", dir: { x: 0, y: 1 } },
+    { name: "左", dir: { x: -1, y: 0 } },
+    { name: "右", dir: { x: 1, y: 0 } },
+  ];
   return [
-    "贪吃蛇有两个目标：先吃到果子，同时不要死。不能只保命。",
-    "x 向右增大，y 向下增大。上 = y-1，下 = y+1，左 = x-1，右 = x+1。",
-    `头在 (${head.x},${head.y})，当前朝向${dirName(snakeDir)}。`,
-    `果子在 (${snakeFood.x},${snakeFood.y})，位于头的${foodSide(dx, dy)}。`,
-    `当前曼哈顿距离 ${Math.abs(dx) + Math.abs(dy)}。`,
+    "贪吃蛇。两个目标：先吃到果子，同时不要死。不能只保命。",
+    `棋盘 ${SNAKE_GRID}x${SNAKE_GRID}，坐标从 0 到 ${SNAKE_GRID - 1}。x 向右增大，y 向下增大。`,
+    "规则：蛇头下一步如果和任意一节蛇身重合，就是失败。蛇身包括头后面的每一节，尾部也算。撞墙也是失败。",
+    "地图：H 是蛇头，o 是蛇身，* 是果子，. 是空格。上方是 y=0。",
+    boardMap(),
+    `蛇身从头到尾：${bodyCells()}。长度 ${snakeBody.length}。`,
+    `头在 (${head.x},${head.y})，当前朝向${dirName(snakeDir)}。不能直接掉头。`,
+    `果子在 (${snakeFood.x},${snakeFood.y})，位于头的${foodSide(dx, dy)}。当前曼哈顿距离 ${Math.abs(dx) + Math.abs(dy)}。`,
+    "四个方向的结果：",
+    ...dirs.map((item) => `${item.name}：${stepFate(item.dir)}`),
     chasing
-      ? "下面每个方向都不会死，而且都在靠近或吃到果子。选距离最小的。"
-      : "靠近果子的方向这一步都会死。下面都是不会死的方向，选离果子最近的，下一步再去吃。",
+      ? "选项都不会碰到蛇身或墙，并且在靠近或吃到果子。选距离最小的。"
+      : "靠近果子的方向会碰到蛇身或墙。选项都不会死，选离果子最近的。",
   ].join("\n");
 }
 
@@ -1239,7 +1280,6 @@ type SnakeMove = {
 
 function candidateMoves(): SnakeMove[] {
   const head = snakeBody[0];
-  const tail = snakeBody[snakeBody.length - 1];
   const now = Math.abs(snakeFood.x - head.x) + Math.abs(snakeFood.y - head.y);
   const dirs = [
     { id: "up" as const, dir: { x: 0, y: -1 } },
@@ -1253,12 +1293,7 @@ function candidateMoves(): SnakeMove[] {
       const x = head.x + move.dir.x;
       const y = head.y + move.dir.y;
       const wall = x < 0 || y < 0 || x >= SNAKE_GRID || y >= SNAKE_GRID;
-      const body = snakeBody.some(
-        (cell, index) =>
-          cell.x === x &&
-          cell.y === y &&
-          !(index === snakeBody.length - 1 && tail.x === x && tail.y === y),
-      );
+      const body = snakeBody.some((cell) => cell.x === x && cell.y === y);
       const dist = Math.abs(snakeFood.x - x) + Math.abs(snakeFood.y - y);
       return {
         id: move.id,
@@ -1289,9 +1324,8 @@ function describeMove(move: SnakeMove) {
   const now = Math.abs(snakeFood.x - head.x) + Math.abs(snakeFood.y - head.y);
   const delta = move.dist - now;
   const fruit = move.eats ? "这一步吃到果子" : delta < 0 ? `靠近果子，距离 ${move.dist}，近 ${-delta}` : `暂时吃不到，距离 ${move.dist}`;
-  const live = "不会死";
   const same = move.dir.x === snakeDir.x && move.dir.y === snakeDir.y ? "，与当前朝向相同" : "";
-  return `走到 (${x},${y})。${fruit}。${live}${same}`;
+  return `走到 (${x},${y})。这一格不是蛇身，也不是墙。${fruit}${same}`;
 }
 
 function applyStep(dir: Cell) {
@@ -1304,6 +1338,7 @@ function applyStep(dir: Cell) {
   if (hitWall || hitSelf) {
     snakeOver = true;
     snakeRunning = false;
+    snakeSteerNote = hitSelf ? "碰到蛇身，失败" : "撞墙，失败";
     drawSnake();
     return;
   }
