@@ -105,13 +105,17 @@ fn read_session_text(id: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn jev_choose(
+    provider: Option<String>,
     api_key: Option<String>,
+    base_url: Option<String>,
     state: String,
     options: Vec<jev::JevOption>,
 ) -> Result<jev::JevDecision, String> {
-    tauri::async_runtime::spawn_blocking(move || jev::choose(api_key, state, options))
-        .await
-        .map_err(|e| format!("{e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        jev::choose(provider, api_key, base_url, state, options)
+    })
+    .await
+    .map_err(|e| format!("{e}"))?
 }
 
 #[tauri::command]

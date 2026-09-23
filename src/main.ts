@@ -137,7 +137,13 @@ const compactAtInput = () => $<HTMLInputElement>("compact-at");
 const jevOnInput = () => $<HTMLInputElement>("jev-on");
 const jevMaxInput = () => $<HTMLInputElement>("jev-max");
 const jevKeyInput = () => $<HTMLInputElement>("jev-key");
+const jevProviderInput = () => $<HTMLSelectElement>("jev-provider");
+const jevBaseInput = () => $<HTMLInputElement>("jev-base");
 const JEV_KEY_STORAGE = "pi-auto-jev-key";
+const DEEPSEEK_KEY_STORAGE = "pi-auto-deepseek-key";
+const LAYA_KEY_STORAGE = "pi-auto-laya-key";
+const JEV_PROVIDER_STORAGE = "pi-auto-jev-provider";
+const LAYA_BASE_STORAGE = "pi-auto-laya-base";
 const JEV_MIN_CONFIDENCE = 0.45;
 const JEV_MIN_CONTINUE = 0.55;
 const JEV_ASK = `【下一步建议】完成上面的工作后，在回复最末尾单独给出 2 到 4 条下一步，用这个代码块，不要在块外解释：
@@ -383,8 +389,46 @@ function withJevAsk(text: string, enabled: boolean) {
   return `${text.trim()}\n\n${JEV_ASK}`;
 }
 
+type DecisionProvider = "jev" | "deepseek" | "laya";
+
+function jevProvider(): DecisionProvider {
+  const value = jevProviderInput().value;
+  return value === "deepseek" || value === "laya" ? value : "jev";
+}
+
+function providerLabel(provider = jevProvider()) {
+  if (provider === "deepseek") return "DeepSeek";
+  if (provider === "laya") return "Laya";
+  return "Jev";
+}
+
+function keyStorage(provider = jevProvider()) {
+  if (provider === "deepseek") return DEEPSEEK_KEY_STORAGE;
+  if (provider === "laya") return LAYA_KEY_STORAGE;
+  return JEV_KEY_STORAGE;
+}
+
 function jevKey() {
   return jevKeyInput().value.trim();
+}
+
+function syncDecisionFields() {
+  const provider = jevProvider();
+  jevKeyInput().value = localStorage.getItem(keyStorage(provider)) ?? "";
+  jevKeyInput().placeholder =
+    provider === "deepseek"
+      ? "DEEPSEEK_API_KEY"
+      : provider === "laya"
+        ? "LAYA_API_KEY，可空"
+        : "TYPESAFE_API_KEY";
+  $("jev-base-wrap").classList.toggle("hidden", provider !== "laya");
+}
+
+function saveDecisionKey() {
+  const key = jevKey();
+  const storage = keyStorage();
+  if (key) localStorage.setItem(storage, key);
+  else localStorage.removeItem(storage);
 }
 
 function suggestionLines(body: string) {
@@ -458,13 +502,16 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
   ].join("\n");
   let decision: JevDecision;
   try {
+    const provider = jevProvider();
     decision = await invoke<JevDecision>("jev_choose", {
+      provider,
       apiKey: jevKey() || null,
+      baseUrl: provider === "laya" ? jevBaseInput().value.trim() || null : null,
       state,
       options,
     });
   } catch (error) {
-    log(`${session.paneId} Jev 决策失败，结束续跑：${error}`, true);
+    log(`${session.paneId} ${providerLabel()} 决策失败，结束续跑：${error}`, true);
     return false;
   }
   const picked = options.find((item) => item.id === decision.choice);
@@ -475,7 +522,7 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
     decision.continueNow < JEV_MIN_CONTINUE
   ) {
     log(
-      `${session.paneId} Jev 决定停止（${decision.choice}，置信 ${pct(decision.confidence)}，继续 ${pct(decision.continueNow)}）`,
+      `${session.paneId} ${providerLabel()} 决定停止（${decision.choice}，置信 ${pct(decision.confidence)}，继续 ${pct(decision.continueNow)}）`,
     );
     return false;
   }
@@ -486,7 +533,7 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
     return false;
   }
   plan.jevRuns += 1;
-  log(`${session.paneId} Jev 续跑 ${plan.jevRuns}/${plan.jevMax}：${picked.text}`);
+  log(`${session.paneId} ${providerLabel()} 续跑 ${plan.jevRuns}/${plan.jevMax}：${picked.text}`);
   if (session.id === selectedId) refreshSelectedPlan();
   return true;
 }
@@ -1039,11 +1086,11 @@ function startLoop() {
   plan.needCompact = true;
   armStallWatch(session);
   lastQueueSig = "";
-  if (plan.jev && !jevKey()) {
-    log(`${session.paneId} 已开启 Jev，但没有 API Key。决策时会跳过续跑`, true);
+  if (plan.jev && jevProvider() !== "laya" && !jevKey()) {
+    log(`${session.paneId} 已开启续跑，但没有 ${providerLabel()} API Key。决策时会跳过续跑`, true);
   }
   log(
-    `${session.paneId} 开始循环：${plan.tasks.length} 条 × ${loopRounds(plan)} 次${plan.jev ? " · Jev 续跑" : ""}`,
+    `${session.paneId} 开始循环：${plan.tasks.length} 条 × ${loopRounds(plan)} 次${plan.jev ? ` · ${providerLabel()} 续跑` : ""}`,
   );
   setAppTheme(session.agent);
   syncRunButtons();
@@ -1616,11 +1663,16 @@ window.addEventListener("DOMContentLoaded", () => {
   commitAfterInput().addEventListener("change", persistPlanInputs);
   jevOnInput().addEventListener("change", persistPlanInputs);
   jevMaxInput().addEventListener("change", persistPlanInputs);
-  jevKeyInput().value = localStorage.getItem(JEV_KEY_STORAGE) ?? "";
-  jevKeyInput().addEventListener("change", () => {
-    const key = jevKey();
-    if (key) localStorage.setItem(JEV_KEY_STORAGE, key);
-    else localStorage.removeItem(JEV_KEY_STORAGE);
+  jevProviderInput().value = localStorage.getItem(JEV_PROVIDER_STORAGE) ?? "jev";
+  jevBaseInput().value = localStorage.getItem(LAYA_BASE_STORAGE) ?? "http://127.0.0.1:8000";
+  syncDecisionFields();
+  jevProviderInput().addEventListener("change", () => {
+    localStorage.setItem(JEV_PROVIDER_STORAGE, jevProvider());
+    syncDecisionFields();
+  });
+  jevKeyInput().addEventListener("change", saveDecisionKey);
+  jevBaseInput().addEventListener("change", () => {
+    localStorage.setItem(LAYA_BASE_STORAGE, jevBaseInput().value.trim());
   });
   syncRunButtons();
 

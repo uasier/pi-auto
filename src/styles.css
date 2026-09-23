@@ -1093,9 +1093,18 @@ button:active:not(:disabled) { transform: translateY(1px); }
   text-align: center;
 }
 
-.jev-key-field input {
+.jev-key-field input,
+.jev-base-field input {
   width: 148px;
   text-align: left;
+}
+
+.chip-field select {
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  outline: none;
+  font: inherit;
 }
 
 .jev-toggle {
