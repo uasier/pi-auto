@@ -42,6 +42,9 @@ type Plan = {
   idleMs: number;
   compactAt: number;
   commitAfter: boolean;
+  jev: boolean;
+  jevMax: number;
+  jevRuns: number;
 };
 type HerdrStatus = {
   connected: boolean;
@@ -131,6 +134,20 @@ const loopRoundsInput = () => $<HTMLInputElement>("loop-rounds");
 const idleMsInput = () => $<HTMLInputElement>("idle-ms");
 const commitAfterInput = () => $<HTMLInputElement>("commit-after");
 const compactAtInput = () => $<HTMLInputElement>("compact-at");
+const jevOnInput = () => $<HTMLInputElement>("jev-on");
+const jevMaxInput = () => $<HTMLInputElement>("jev-max");
+const jevKeyInput = () => $<HTMLInputElement>("jev-key");
+const JEV_KEY_STORAGE = "pi-auto-jev-key";
+const JEV_MIN_CONFIDENCE = 0.45;
+const JEV_MIN_CONTINUE = 0.55;
+const JEV_ASK = `【下一步建议】完成上面的工作后，在回复最末尾单独给出 2 到 4 条下一步，用这个代码块，不要在块外解释：
+
+\`\`\`jev-next
+1. 一条可立刻执行的下一步
+2. 另一条
+\`\`\`
+
+每条一行，写具体要改的文件或要验证的行为。不要重复已经做完的事。如果没有值得继续的下一步，代码块里只写「无」。`;
 
 function log(message: string, err = false) {
   const box = $("log");
@@ -159,6 +176,9 @@ function emptyPlan(): Plan {
     idleMs: 2,
     compactAt: 70,
     commitAfter: true,
+    jev: false,
+    jevMax: 3,
+    jevRuns: 0,
   };
 }
 
@@ -182,6 +202,8 @@ function syncPlanInputsFromUi() {
   plan.idleMs = Math.max(1, Number(idleMsInput().value) || 2);
   plan.compactAt = Math.max(10, Math.min(95, Number(compactAtInput().value) || 70));
   plan.commitAfter = commitAfterInput().checked;
+  plan.jev = jevOnInput().checked;
+  plan.jevMax = Math.max(1, Math.min(8, Number(jevMaxInput().value) || 3));
 }
 
 function applyPlanInputsToUi() {
@@ -191,6 +213,8 @@ function applyPlanInputsToUi() {
   idleMsInput().value = String(plan.idleMs);
   compactAtInput().value = String(plan.compactAt);
   commitAfterInput().checked = plan.commitAfter;
+  jevOnInput().checked = plan.jev;
+  jevMaxInput().value = String(plan.jevMax);
 }
 
 function selectSession(id: string | null) {
@@ -353,6 +377,120 @@ function withCommit(text: string, commit: boolean) {
   return `${text.trim()}\n\n${COMMIT_NOTE}`;
 }
 
+function withJevAsk(text: string, enabled: boolean) {
+  if (!enabled) return text.trim();
+  if (text.includes("```jev-next")) return text.trim();
+  return `${text.trim()}\n\n${JEV_ASK}`;
+}
+
+function jevKey() {
+  return jevKeyInput().value.trim();
+}
+
+function suggestionLines(body: string) {
+  return body
+    .split(/\n/)
+    .map((line) => line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").trim())
+    .filter((line) => line.length >= 4)
+    .filter((line) => !/^(无|没有|none|n\/a)$/i.test(line))
+    .filter((line) => line !== "一条可立刻执行的下一步" && line !== "另一条")
+    .slice(0, 4);
+}
+
+function parseJevSuggestions(raw: string) {
+  const text = stripAnsi(raw).replace(/\r/g, "");
+  const fences = [...text.matchAll(/```(?:jev-next|next)\s*([\s\S]*?)```/gi)];
+  const fenced = fences.length ? fences[fences.length - 1][1] : "";
+  const fromFence = suggestionLines(fenced);
+  if (fromFence.length) return fromFence;
+  const lines = text.split(/\n/);
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (/下一步建议|jev-next|下一步/.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return [];
+  return suggestionLines(lines.slice(start + 1, start + 12).join("\n"));
+}
+
+function continuationPrompt(step: string) {
+  return withJevAsk(
+    `Jev 已选定下一步。现在只做这一项，做完就停：\n\n${step}\n\n不要同时做其他建议，不要扩大范围。`,
+    true,
+  );
+}
+
+type JevDecision = {
+  choice: string;
+  confidence: number;
+  continueNow: number;
+};
+
+async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskItem) {
+  if (!plan.jev) return false;
+  if (plan.jevRuns >= plan.jevMax) {
+    log(`${session.paneId} Jev 续跑已达 ${plan.jevMax} 次`);
+    return false;
+  }
+  let raw = session.preview;
+  try {
+    const fresh = await invoke<string>("read_session_text", { id: session.id });
+    if (fresh.trim()) raw = fresh;
+  } catch (error) {
+    log(`${session.paneId} 读取下一步失败：${error}`, true);
+  }
+  const suggestions = parseJevSuggestions(raw);
+  if (suggestions.length === 0) {
+    log(`${session.paneId} 未解析到下一步建议，结束 Jev 续跑`);
+    return false;
+  }
+  const options = suggestions.map((text, i) => ({ id: `s${i + 1}`, text }));
+  const tail = stripAnsi(raw).slice(-3500);
+  const state = [
+    `任务：${task.title}`,
+    task.text.slice(0, 800),
+    "候选下一步：",
+    ...suggestions.map((item, i) => `${i + 1}. ${item}`),
+    "终端输出末尾：",
+    tail,
+  ].join("\n");
+  let decision: JevDecision;
+  try {
+    decision = await invoke<JevDecision>("jev_choose", {
+      apiKey: jevKey() || null,
+      state,
+      options,
+    });
+  } catch (error) {
+    log(`${session.paneId} Jev 决策失败，结束续跑：${error}`, true);
+    return false;
+  }
+  const picked = options.find((item) => item.id === decision.choice);
+  const pct = (value: number) => `${Math.round(value * 100)}%`;
+  if (
+    !picked ||
+    decision.confidence < JEV_MIN_CONFIDENCE ||
+    decision.continueNow < JEV_MIN_CONTINUE
+  ) {
+    log(
+      `${session.paneId} Jev 决定停止（${decision.choice}，置信 ${pct(decision.confidence)}，继续 ${pct(decision.continueNow)}）`,
+    );
+    return false;
+  }
+  try {
+    await sendNow(session, plan, continuationPrompt(picked.text), false);
+  } catch (error) {
+    log(`${session.paneId} Jev 续跑发送失败：${error}`, true);
+    return false;
+  }
+  plan.jevRuns += 1;
+  log(`${session.paneId} Jev 续跑 ${plan.jevRuns}/${plan.jevMax}：${picked.text}`);
+  if (session.id === selectedId) refreshSelectedPlan();
+  return true;
+}
+
 function makeTask(text: string, commit: boolean): TaskItem {
   const body = text.trim();
   return {
@@ -468,8 +606,9 @@ function renderLoopStatus() {
         : pending
           ? "等待空闲"
           : "本轮收尾";
+  const jevBit = plan.jev ? ` · Jev ${plan.jevRuns}/${plan.jevMax}` : "";
   $("loop-status").textContent =
-    `${plan.currentRound}/${totalRounds} · ${done}/${total} · ${now}` +
+    `${plan.currentRound}/${totalRounds} · ${done}/${total} · ${now}${jevBit}` +
     (cur ? ` · ${cur.title}` : "");
 }
 
@@ -886,6 +1025,7 @@ function startLoop() {
   const allDone = plan.tasks.every((t) => t.status === "done");
   if (allDone) {
     plan.currentRound = 1;
+    plan.jevRuns = 0;
     for (const task of plan.tasks) task.status = "pending";
   }
   const running = plan.tasks.find((t) => t.status === "running" || t.status === "committing");
@@ -899,7 +1039,12 @@ function startLoop() {
   plan.needCompact = true;
   armStallWatch(session);
   lastQueueSig = "";
-  log(`${session.paneId} 开始循环：${plan.tasks.length} 条 × ${loopRounds(plan)} 次`);
+  if (plan.jev && !jevKey()) {
+    log(`${session.paneId} 已开启 Jev，但没有 API Key。决策时会跳过续跑`, true);
+  }
+  log(
+    `${session.paneId} 开始循环：${plan.tasks.length} 条 × ${loopRounds(plan)} 次${plan.jev ? " · Jev 续跑" : ""}`,
+  );
   setAppTheme(session.agent);
   syncRunButtons();
   renderQueue(true);
@@ -929,6 +1074,7 @@ function stopLoop() {
   plan.phase = "idle";
   plan.idleSince = null;
   plan.sentAt = null;
+  plan.jevRuns = 0;
   clearStallWatch(selectedId);
   for (const task of plan.tasks) task.status = "pending";
   log(`${selected()?.paneId ?? "当前窗口"} 已停止循环，进度已清零`);
@@ -1288,6 +1434,9 @@ async function tickPlan(session: AgentSession, plan: Plan) {
     }
     if (plan.phase === "settling") {
       if (plan.idleSince && now - plan.idleSince < stableMs) return;
+      if (running.status === "running" && (await maybeJevContinue(session, plan, running))) {
+        return;
+      }
       if (running.status === "running" && running.commit) {
         try {
           await startCommit(session, plan, running);
@@ -1323,8 +1472,9 @@ async function tickPlan(session: AgentSession, plan: Plan) {
   }
   try {
     next.status = "running";
+    plan.jevRuns = 0;
     if (session.id === selectedId) refreshSelectedPlan();
-    await sendNow(session, plan, next.text, false);
+    await sendNow(session, plan, withJevAsk(next.text, plan.jev), false);
   } catch (error) {
     next.status = "pending";
     plan.phase = "idle";
@@ -1464,6 +1614,14 @@ window.addEventListener("DOMContentLoaded", () => {
   idleMsInput().addEventListener("change", persistPlanInputs);
   compactAtInput().addEventListener("change", persistPlanInputs);
   commitAfterInput().addEventListener("change", persistPlanInputs);
+  jevOnInput().addEventListener("change", persistPlanInputs);
+  jevMaxInput().addEventListener("change", persistPlanInputs);
+  jevKeyInput().value = localStorage.getItem(JEV_KEY_STORAGE) ?? "";
+  jevKeyInput().addEventListener("change", () => {
+    const key = jevKey();
+    if (key) localStorage.setItem(JEV_KEY_STORAGE, key);
+    else localStorage.removeItem(JEV_KEY_STORAGE);
+  });
   syncRunButtons();
 
   log("已启动");

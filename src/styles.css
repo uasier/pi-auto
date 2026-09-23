@@ -1093,6 +1093,15 @@ button:active:not(:disabled) { transform: translateY(1px); }
   text-align: center;
 }
 
+.jev-key-field input {
+  width: 148px;
+  text-align: left;
+}
+
+.jev-toggle {
+  margin-top: 8px;
+}
+
 .loop-meter {
   margin-left: auto;
   min-width: 160px;

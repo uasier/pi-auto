@@ -1,4 +1,5 @@
 mod herdr;
+mod jev;
 mod update;
 
 use serde::Serialize;
@@ -97,6 +98,23 @@ fn send_to_session(id: String, text: String, force: bool) -> Result<String, Stri
 }
 
 #[tauri::command]
+fn read_session_text(id: String) -> Result<String, String> {
+    let pane_id = id.strip_prefix("herdr:").unwrap_or(id.as_str());
+    herdr::read_pane(pane_id)
+}
+
+#[tauri::command]
+async fn jev_choose(
+    api_key: Option<String>,
+    state: String,
+    options: Vec<jev::JevOption>,
+) -> Result<jev::JevDecision, String> {
+    tauri::async_runtime::spawn_blocking(move || jev::choose(api_key, state, options))
+        .await
+        .map_err(|e| format!("{e}"))?
+}
+
+#[tauri::command]
 fn nudge_session(id: String, text: String) -> Result<String, String> {
     let pane_id = id
         .strip_prefix("herdr:")
@@ -156,6 +174,8 @@ pub fn run() {
             list_sessions,
             send_to_session,
             nudge_session,
+            read_session_text,
+            jev_choose,
             herdr_status,
             app_info,
             check_update,

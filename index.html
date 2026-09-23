@@ -120,7 +120,21 @@
               <input type="number" id="compact-at" min="10" max="95" value="70" />
               %
             </label>
+            <label class="chip-field">
+              续跑
+              <input type="number" id="jev-max" min="1" max="8" value="3" />
+              次
+            </label>
+            <label class="chip-field jev-key-field">
+              Key
+              <input type="password" id="jev-key" placeholder="TYPESAFE_API_KEY" autocomplete="off" spellcheck="false" />
+            </label>
           </div>
+          <label class="toggle jev-toggle">
+            <input type="checkbox" id="jev-on" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span>Jev 续跑</span>
+          </label>
         </div>
         <div class="panel plan-panel">
           <div class="panel-title">
@@ -210,7 +224,7 @@
             <span>4</span>
             <div>
               <strong>开始循环</strong>
-              <p>点「开始循环」：空闲后自动下一条。做完可单独再走一轮提交；上下文超过阈值会先压缩。执行中若连续 5 分钟画面差异不到 1%，会自动输入「继续」唤醒卡死的 CLI。</p>
+              <p>点「开始循环」：空闲后自动下一条。做完可单独再走一轮提交；上下文超过阈值会先压缩。执行中若连续 5 分钟画面差异不到 1%，会自动输入「继续」唤醒卡死的 CLI。打开「Jev 续跑」后，每轮会要求列出下一步，由 Jev 选定一项再自动续跑。</p>
             </div>
           </div>
         </div>
