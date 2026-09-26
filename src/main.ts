@@ -1376,6 +1376,7 @@ function syncDriverOptions() {
   layaOpt.disabled = !gameBackends.laya;
   jevOpt.textContent = gameBackends.jev ? "Jev" : "Jev 未接入";
   layaOpt.textContent = gameBackends.laya ? "Laya" : "Laya 未接入";
+  syncStartButton();
 }
 
 function loadDriverSelect(game: IdleGameKind = idleGame()) {
@@ -1432,12 +1433,19 @@ function drawSnake() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0a0c10";
   ctx.fillRect(0, 0, size, size);
-  ctx.fillStyle = "#c98b86";
-  ctx.fillRect(snakeFood.x * SNAKE_CELL + 4, snakeFood.y * SNAKE_CELL + 4, SNAKE_CELL - 8, SNAKE_CELL - 8);
-  snakeBody.forEach((cell, index) => {
-    ctx.fillStyle = index === 0 ? "#e7ebf2" : "#7eaea6";
-    ctx.fillRect(cell.x * SNAKE_CELL + 2, cell.y * SNAKE_CELL + 2, SNAKE_CELL - 4, SNAKE_CELL - 4);
-  });
+  ctx.strokeStyle = "#15181e";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < SNAKE_GRID; i += 1) {
+    const at = i * SNAKE_CELL + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(at, 0);
+    ctx.lineTo(at, size);
+    ctx.moveTo(0, at);
+    ctx.lineTo(size, at);
+    ctx.stroke();
+  }
+  drawSnakeFood(ctx);
+  for (let index = snakeBody.length - 1; index >= 0; index -= 1) drawSnakePart(ctx, index);
   $("idle-game-score").textContent = snakeOver ? `${snakeScore} · 点开始重来` : String(snakeScore);
   const driver = $<HTMLSelectElement>("idle-driver").value;
   const driving = driver === "jev" || driver === "laya";
@@ -1446,8 +1454,6 @@ function drawSnake() {
     : driving
       ? `${driver === "laya" ? "Laya" : "Jev"} 控制 · 收到决策才移动`
       : "方向键移动 · 选会话后停止";
-  syncSnakeControls();
-  syncStartButton();
 }
 
 function waitingToStart() {
@@ -1478,12 +1484,64 @@ function beginGame() {
   snakeRunning = true;
   resetSnake();
   startControlLoop();
+  syncStartButton();
 }
 
 const SNAKE_ASK_FRUIT =
-  "两个目标：第一是吃到果子，第二才是不要死。蛇头不能碰到蛇身，碰到就是失败。这些方向都不会碰到蛇身或墙。选吃到果子的；没有就选移动后距离最小的。距离相同就保持当前朝向。";
+  "先吃到果子，再选更近的。不要选会困住的，除非每个选项都会困住。距离相同就选走后可达格更多的，再保持当前朝向。";
 const SNAKE_ASK_LIVE =
-  "两个目标：第一是吃到果子，第二才是不要死。蛇头不能碰到蛇身，碰到就是失败。靠近果子的方向这一步都会碰到蛇身或墙。在这些不会死的方向里，选离果子最近的。";
+  "这些方向都不会立刻死，但都不更近。选不会困住且距离最小的。都会困住时，选走后可达格更多的。";
+
+const SNAKE_DIRS = [
+  { id: "up" as const, name: "上", dir: { x: 0, y: -1 } },
+  { id: "down" as const, name: "下", dir: { x: 0, y: 1 } },
+  { id: "left" as const, name: "左", dir: { x: -1, y: 0 } },
+  { id: "right" as const, name: "右", dir: { x: 1, y: 0 } },
+];
+
+function cellKey(cell: Cell) {
+  return `${cell.x},${cell.y}`;
+}
+
+function snakeChar(x: number, y: number) {
+  if (x < 0 || y < 0 || x >= SNAKE_GRID || y >= SNAKE_GRID) return "#";
+  if (x === snakeBody[0]?.x && y === snakeBody[0]?.y) return "H";
+  const tail = snakeBody[snakeBody.length - 1];
+  if (tail && x === tail.x && y === tail.y) return "T";
+  if (snakeBody.some((cell) => cell.x === x && cell.y === y)) return "o";
+  if (x === snakeFood.x && y === snakeFood.y) return "*";
+  return ".";
+}
+
+function drawSnakeFood(ctx: CanvasRenderingContext2D) {
+  const x = snakeFood.x * SNAKE_CELL;
+  const y = snakeFood.y * SNAKE_CELL;
+  ctx.fillStyle = "#c98b86";
+  ctx.fillRect(x + 6, y + 6, 4, 4);
+  ctx.fillRect(x + 7, y + 3, 2, 10);
+  ctx.fillRect(x + 3, y + 7, 10, 2);
+}
+
+function drawSnakePart(ctx: CanvasRenderingContext2D, index: number) {
+  const cell = snakeBody[index];
+  const x = cell.x * SNAKE_CELL;
+  const y = cell.y * SNAKE_CELL;
+  const head = index === 0;
+  const tail = index === snakeBody.length - 1;
+  ctx.fillStyle = head ? "#e7ebf2" : tail ? "#5f8f86" : "#7eaea6";
+  const inset = head ? 2 : 3;
+  ctx.fillRect(x + inset, y + inset, SNAKE_CELL - inset * 2, SNAKE_CELL - inset * 2);
+  if (index > 0) {
+    const prev = snakeBody[index - 1];
+    ctx.fillRect(((cell.x + prev.x) * SNAKE_CELL) / 2 + 6, ((cell.y + prev.y) * SNAKE_CELL) / 2 + 6, 4, 4);
+  }
+  if (!head) return;
+  ctx.fillStyle = "#0a0c10";
+  const px = snakeDir.y;
+  const py = -snakeDir.x;
+  ctx.fillRect(x + 7 + snakeDir.x * 3 + px * 2, y + 7 + snakeDir.y * 3 + py * 2, 2, 2);
+  ctx.fillRect(x + 7 + snakeDir.x * 3 - px * 2, y + 7 + snakeDir.y * 3 - py * 2, 2, 2);
+}
 
 function dirName(dir: Cell) {
   if (dir.x === 1) return "右";
@@ -1498,60 +1556,84 @@ function foodSide(dx: number, dy: number) {
   return [horizontal, vertical].filter(Boolean).join("、") || "已重合";
 }
 
-function bodyCells() {
-  return snakeBody.map((cell, index) => `${index === 0 ? "头" : `身${index}`}(${cell.x},${cell.y})`).join(" ");
-}
-
 function boardMap() {
   const rows: string[] = [];
   for (let y = 0; y < SNAKE_GRID; y += 1) {
     let line = "";
-    for (let x = 0; x < SNAKE_GRID; x += 1) {
-      if (x === snakeBody[0]?.x && y === snakeBody[0]?.y) line += "H";
-      else if (snakeBody.some((cell) => cell.x === x && cell.y === y)) line += "o";
-      else if (x === snakeFood.x && y === snakeFood.y) line += "*";
-      else line += ".";
-    }
+    for (let x = 0; x < SNAKE_GRID; x += 1) line += snakeChar(x, y);
     rows.push(line);
   }
   return rows.join("\n");
 }
 
-function stepFate(dir: Cell) {
+function localMap() {
   const head = snakeBody[0];
-  const x = head.x + dir.x;
-  const y = head.y + dir.y;
-  if (x < 0 || y < 0 || x >= SNAKE_GRID || y >= SNAKE_GRID) return "撞墙，失败";
-  if (snakeBody.some((cell) => cell.x === x && cell.y === y)) return "碰到蛇身，失败";
-  if (x === snakeFood.x && y === snakeFood.y) return "吃到果子，不会死";
-  const dist = Math.abs(snakeFood.x - x) + Math.abs(snakeFood.y - y);
-  return `不会死，移动后距离 ${dist}`;
+  const rows: string[] = [];
+  for (let dy = -2; dy <= 2; dy += 1) {
+    const cells: string[] = [];
+    for (let dx = -2; dx <= 2; dx += 1) cells.push(snakeChar(head.x + dx, head.y + dy));
+    rows.push(`y${head.y + dy}: ${cells.join(" ")}`);
+  }
+  return rows.join("\n");
 }
 
-function snakeState(chasing: boolean) {
+function clearAhead(dir: Cell) {
+  const blocked = new Set(snakeBody.map(cellKey));
+  let count = 0;
+  let x = snakeBody[0].x + dir.x;
+  let y = snakeBody[0].y + dir.y;
+  while (x >= 0 && y >= 0 && x < SNAKE_GRID && y < SNAKE_GRID && !blocked.has(`${x},${y}`)) {
+    count += 1;
+    x += dir.x;
+    y += dir.y;
+  }
+  return count;
+}
+
+function spaceAfter(dir: Cell) {
+  const head = snakeBody[0];
+  const next = { x: head.x + dir.x, y: head.y + dir.y };
+  const eats = next.x === snakeFood.x && next.y === snakeFood.y;
+  const body = eats ? [next, ...snakeBody] : [next, ...snakeBody.slice(0, -1)];
+  const blocked = new Set(body.slice(1).map(cellKey));
+  const queue = [next];
+  const seen = new Set([cellKey(next)]);
+  let space = 0;
+  while (queue.length > 0) {
+    const cell = queue.shift();
+    if (!cell) break;
+    space += 1;
+    for (const step of SNAKE_DIRS) {
+      const nx = cell.x + step.dir.x;
+      const ny = cell.y + step.dir.y;
+      const key = `${nx},${ny}`;
+      if (nx < 0 || ny < 0 || nx >= SNAKE_GRID || ny >= SNAKE_GRID || seen.has(key) || blocked.has(key)) continue;
+      seen.add(key);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  return { space, length: body.length, traps: space < body.length };
+}
+
+function snakeState(chasing: boolean, avoidedTrap: boolean) {
   const head = snakeBody[0];
   const dx = snakeFood.x - head.x;
   const dy = snakeFood.y - head.y;
-  const dirs = [
-    { name: "上", dir: { x: 0, y: -1 } },
-    { name: "下", dir: { x: 0, y: 1 } },
-    { name: "左", dir: { x: -1, y: 0 } },
-    { name: "右", dir: { x: 1, y: 0 } },
-  ];
   return [
-    "贪吃蛇。两个目标：先吃到果子，同时不要死。不能只保命。",
-    `棋盘 ${SNAKE_GRID}x${SNAKE_GRID}，坐标从 0 到 ${SNAKE_GRID - 1}。x 向右增大，y 向下增大。`,
-    "规则：蛇头下一步如果和任意一节蛇身重合，就是失败。蛇身包括头后面的每一节，尾部也算。撞墙也是失败。",
-    "地图：H 是蛇头，o 是蛇身，* 是果子，. 是空格。上方是 y=0。",
+    "贪吃蛇。先吃到果子，同时不要死，也不要走进死路。",
+    `棋盘 ${SNAKE_GRID}x${SNAKE_GRID}。x 向右增大，y 向下增大。上方是 y=0。`,
+    "H 蛇头，o 蛇身，T 尾巴，* 果子，. 空格，# 棋盘外。头碰到墙、蛇身或尾巴都失败。尾巴这一步不会让开。",
     boardMap(),
-    `蛇身从头到尾：${bodyCells()}。长度 ${snakeBody.length}。`,
-    `头在 (${head.x},${head.y})，当前朝向${dirName(snakeDir)}。不能直接掉头。`,
-    `果子在 (${snakeFood.x},${snakeFood.y})，位于头的${foodSide(dx, dy)}。当前曼哈顿距离 ${Math.abs(dx) + Math.abs(dy)}。`,
-    "四个方向的结果：",
-    ...dirs.map((item) => `${item.name}：${stepFate(item.dir)}`),
-    chasing
-      ? "选项都不会碰到蛇身或墙，并且在靠近或吃到果子。选距离最小的。"
-      : "靠近果子的方向会碰到蛇身或墙。选项都不会死，选离果子最近的。",
+    "头周围 5x5：",
+    localMap(),
+    `头 (${head.x},${head.y}) 朝${dirName(snakeDir)}。果子 (${snakeFood.x},${snakeFood.y})，在${foodSide(dx, dy)}，距离 ${Math.abs(dx) + Math.abs(dy)}。身长 ${snakeBody.length}。`,
+    `四向到障碍的空格：${SNAKE_DIRS.map((item) => `${item.name}${clearAhead(item.dir)}`).join(" ")}。`,
+    "走后可达格少于走后身长，就是困住。",
+    avoidedTrap
+      ? "有方向会困住，那些没有放进选项。"
+      : chasing
+        ? "选项都不会立刻死，并且在吃到或靠近果子。"
+        : "靠近果子的方向会立刻死。选项都不会立刻死。",
   ].join("\n");
 }
 
@@ -1561,24 +1643,22 @@ type SnakeMove = {
   dist: number;
   eats: boolean;
   closer: boolean;
+  open: number;
+  space: number;
+  length: number;
+  traps: boolean;
 };
 
 function candidateMoves(): SnakeMove[] {
   const head = snakeBody[0];
   const now = Math.abs(snakeFood.x - head.x) + Math.abs(snakeFood.y - head.y);
-  const dirs = [
-    { id: "up" as const, dir: { x: 0, y: -1 } },
-    { id: "down" as const, dir: { x: 0, y: 1 } },
-    { id: "left" as const, dir: { x: -1, y: 0 } },
-    { id: "right" as const, dir: { x: 1, y: 0 } },
-  ];
-  return dirs
-    .filter((move) => move.dir.x !== -snakeDir.x || move.dir.y !== -snakeDir.y)
+  return SNAKE_DIRS.filter((move) => move.dir.x !== -snakeDir.x || move.dir.y !== -snakeDir.y)
     .map((move) => {
       const x = head.x + move.dir.x;
       const y = head.y + move.dir.y;
       const wall = x < 0 || y < 0 || x >= SNAKE_GRID || y >= SNAKE_GRID;
       const body = snakeBody.some((cell) => cell.x === x && cell.y === y);
+      const room = spaceAfter(move.dir);
       const dist = Math.abs(snakeFood.x - x) + Math.abs(snakeFood.y - y);
       return {
         id: move.id,
@@ -1586,19 +1666,38 @@ function candidateMoves(): SnakeMove[] {
         dist,
         eats: x === snakeFood.x && y === snakeFood.y,
         closer: dist < now,
+        open: clearAhead(move.dir),
+        space: room.space,
+        length: room.length,
+        traps: room.traps,
         blocked: wall || body,
       };
     })
     .filter((move) => !move.blocked)
-    .map(({ id, dir, dist, eats, closer }) => ({ id, dir, dist, eats, closer }));
+    .map(({ id, dir, dist, eats, closer, open, space, length, traps }) => ({
+      id,
+      dir,
+      dist,
+      eats,
+      closer,
+      open,
+      space,
+      length,
+      traps,
+    }));
 }
 
 function movesForDecision() {
   const safe = candidateMoves();
-  const chasing = safe.filter((move) => move.eats || move.closer);
+  const open = safe.filter((move) => !move.traps);
+  const pool = open.length > 0 ? open : safe;
+  const eaters = pool.filter((move) => move.eats);
+  const closer = pool.filter((move) => move.closer);
+  const moves = eaters.length > 0 ? eaters : closer.length > 0 ? closer : pool;
   return {
-    chasing: chasing.length > 0,
-    moves: chasing.length > 0 ? chasing : safe,
+    chasing: eaters.length > 0 || closer.length > 0,
+    avoidedTrap: open.length > 0 && open.length < safe.length,
+    moves,
   };
 }
 
@@ -1606,11 +1705,12 @@ function describeMove(move: SnakeMove) {
   const head = snakeBody[0];
   const x = head.x + move.dir.x;
   const y = head.y + move.dir.y;
-  const now = Math.abs(snakeFood.x - head.x) + Math.abs(snakeFood.y - head.y);
-  const delta = move.dist - now;
-  const fruit = move.eats ? "这一步吃到果子" : delta < 0 ? `靠近果子，距离 ${move.dist}，近 ${-delta}` : `暂时吃不到，距离 ${move.dist}`;
-  const same = move.dir.x === snakeDir.x && move.dir.y === snakeDir.y ? "，与当前朝向相同" : "";
-  return `走到 (${x},${y})。这一格不是蛇身，也不是墙。${fruit}${same}`;
+  const fruit = move.eats ? "这一步吃到果子" : move.closer ? `不吃，距离 ${move.dist}，更近` : `不吃，距离 ${move.dist}，不更近`;
+  const room = move.traps
+    ? `走后可达 ${move.space}，少于身长 ${move.length}，会困住`
+    : `走后可达 ${move.space}，身长 ${move.length}，不会困住`;
+  const turn = move.dir.x === snakeDir.x && move.dir.y === snakeDir.y ? "朝向不变" : "要转向";
+  return `${dirName(move.dir)}到 (${x},${y})。不是墙，不是蛇身。${fruit}。前方空 ${move.open} 格。${room}。${turn}。`;
 }
 
 function applyStep(dir: Cell) {
@@ -1625,6 +1725,7 @@ function applyStep(dir: Cell) {
     snakeRunning = false;
     snakeSteerNote = hitSelf ? "碰到蛇身，失败" : "撞墙，失败";
     drawSnake();
+    syncStartButton();
     return;
   }
   snakeBody.unshift(head);
@@ -1651,6 +1752,14 @@ async function aiTurn(epoch: number) {
     snakeRunning = false;
     snakeSteerNote = "无路可走";
     drawSnake();
+    syncStartButton();
+    return;
+  }
+  if (moves.length === 1) {
+    const only = moves[0];
+    logSnake(`只有 ${only.id} 可走，直接走 · 距离 ${only.dist} · 可达 ${only.space}`);
+    applyStep(only.dir);
+    if (!snakeOver && epoch === snakeEpoch && snakeDriver() !== "manual") queueAiTurn();
     return;
   }
   snakeAiBusy = true;
@@ -1658,14 +1767,14 @@ async function aiTurn(epoch: number) {
   drawSnake();
   const started = Date.now();
   logSnake(
-    `${plan.chasing ? "吃果子" : "先保命再吃"} · ${moves.map((move) => `${move.id}:${move.dist}`).join(" ")}`,
+    `${plan.avoidedTrap ? "绕开死路" : plan.chasing ? "吃果子" : "先保命再吃"} · ${moves.map((move) => `${move.id}:${move.dist}/${move.space}`).join(" ")}`,
   );
   try {
     const decision = await invoke<JevDecision>("jev_choose", {
       provider: driver,
       apiKey: localStorage.getItem(keyStorage(driver))?.trim() || null,
       baseUrl: providerBase(driver),
-      state: snakeState(plan.chasing),
+      state: snakeState(plan.chasing, plan.avoidedTrap),
       options: moves.map((move) => ({ id: move.id, text: describeMove(move) })),
       instructions: plan.chasing ? SNAKE_ASK_FRUIT : SNAKE_ASK_LIVE,
       includeStop: false,
@@ -1950,11 +2059,9 @@ function drawDino() {
       ? dinoUsesLaya()
         ? snakeAiBusy
           ? "Laya 决策中"
-          : "Laya 控制 · 按实时状态决策"
+          : "Laya 控制 · 靠近障碍再决策"
         : "空格 / ↑ 跳 · ↓ 蹲"
       : `最高 ${dinoBest} · 空格开始`;
-  syncSnakeControls();
-  syncStartButton();
 }
 
 function dinoDist(obstacle: DinoObstacle) {
@@ -1994,7 +2101,7 @@ function foresee(action: DinoAction) {
     for (const obstacle of obstacles) {
       obstacle.x -= dinoSpeed;
       if (box.x < obstacle.x + obstacle.w - 6 && box.x + box.w > obstacle.x + 6 && box.y < obstacle.y + obstacle.h - 6 && box.y + box.h > obstacle.y + 6) {
-        return { ok: false, hit: `${obstacleName(obstacle)}，约 ${Math.round(dinoDist(obstacle))} 像素外` };
+        return { ok: false, hit: `${obstacleName(obstacle)}，约 ${frame} 帧后` };
       }
     }
     if (obstacles.every((item) => item.x + item.w < box.x)) return { ok: true, hit: "" };
@@ -2019,8 +2126,24 @@ function dinoScene() {
   ].join("\n");
 }
 
+function dinoActions(): DinoAction[] {
+  return dinoY >= 2 ? ["run"] : ["run", "jump", "duck"];
+}
+
+function nearestThreat() {
+  return dinoObstacles
+    .filter((item) => dinoDist(item) > -24)
+    .sort((a, b) => a.x - b.x)[0];
+}
+
+function dinoNeedsDecision() {
+  const next = nearestThreat();
+  if (!next) return false;
+  return dinoDist(next) <= 260 || dinoY >= 2 || dinoDuck;
+}
+
 function dinoChoices() {
-  const actions: DinoAction[] = ["run", "jump", "duck"];
+  const actions = dinoActions();
   const label: Record<DinoAction, string> = { run: "继续跑", jump: "现在起跳", duck: "现在蹲下" };
   return actions.map((id) => {
     const outcome = foresee(id);
@@ -2052,14 +2175,16 @@ function liveChoiceFits(id: DinoAction) {
   return foresee(id).ok;
 }
 
-function continueDinoAsk(epoch: number) {
+function continueDinoAsk(epoch: number, delay = 30) {
   dinoAsking = false;
   if (epoch !== dinoEpoch || !dinoRunning || dinoOver || !dinoUsesLaya()) return;
-  queueDinoTurn();
+  if (!dinoNeedsDecision()) return;
+  dinoAsking = true;
+  window.setTimeout(() => void dinoTurn(epoch), delay);
 }
 
 async function dinoTurn(epoch: number) {
-  if (epoch !== dinoEpoch || !dinoRunning || dinoOver || !dinoUsesLaya()) {
+  if (epoch !== dinoEpoch || !dinoRunning || dinoOver || !dinoUsesLaya() || !dinoNeedsDecision()) {
     dinoAsking = false;
     return;
   }
@@ -2068,6 +2193,17 @@ async function dinoTurn(epoch: number) {
     return;
   }
   const options = dinoChoices();
+  const viable = options.filter((item) => foresee(item.id).ok);
+  if (viable.length <= 1) {
+    const only = viable[0];
+    if (only && only.id !== "run") {
+      applyDinoAction(only.id);
+      logDino(`只有 ${only.id} 能过，直接执行`);
+    }
+    dinoSteerNote = "";
+    continueDinoAsk(epoch, 140);
+    return;
+  }
   snakeAiBusy = true;
   dinoSteerNote = "Laya 决策中";
   const started = Date.now();
@@ -2108,7 +2244,7 @@ async function dinoTurn(epoch: number) {
 }
 
 function queueDinoTurn() {
-  if (!dinoRunning || dinoOver || !dinoUsesLaya() || snakeAiBusy || dinoAsking) return;
+  if (!dinoRunning || dinoOver || !dinoUsesLaya() || snakeAiBusy || dinoAsking || !dinoNeedsDecision()) return;
   dinoAsking = true;
   const epoch = dinoEpoch;
   window.setTimeout(() => void dinoTurn(epoch), 30);
@@ -2139,6 +2275,7 @@ function stepDino(now: number) {
     dinoRunning = false;
     rememberDinoScore();
     drawDino();
+    syncStartButton();
     return;
   }
   drawDino();
@@ -2154,6 +2291,7 @@ function beginDino() {
   dinoSteerNote = "";
   dinoAsking = false;
   drawDino();
+  syncStartButton();
   dinoRaf = requestAnimationFrame(stepDino);
   if (dinoUsesLaya()) queueDinoTurn();
 }
