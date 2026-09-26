@@ -17,6 +17,7 @@
   --claude: #c4978c;
   --codex: #7eaea6;
   --grok: #c6b48a;
+  --shell: #9aa3b2;
   --agent: var(--accent);
   --radius: 8px;
   font-family: ui-sans-serif, "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
@@ -104,6 +105,63 @@ textarea { font: inherit; }
   font-weight: 600;
   letter-spacing: 0;
 }
+
+.rail-tools { display: flex; align-items: center; gap: 2px; }
+.rail-text { padding: 2px 6px; font-size: 12px; }
+
+.term-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.term-field input,
+.term-field select { width: 100%; }
+
+.term-path {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.term-path strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.term-path button { flex: none; padding: 4px 8px; font-size: 12px; }
+
+.term-paths {
+  display: flex;
+  flex-direction: column;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.term-paths button {
+  padding: 7px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+}
+.term-paths button:last-child { border-bottom: 0; }
+.term-paths button.on { background: var(--surface-2); }
+.term-paths em { color: var(--muted); font-style: normal; }
 
 .rail-head,
 .panel-title {

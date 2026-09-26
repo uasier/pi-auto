@@ -3,9 +3,41 @@ mod herdr_term;
 mod jev;
 mod update;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+static WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn open_new_window(app: &AppHandle) -> Result<(), String> {
+    let seq = WINDOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let label = format!("win-{seq}");
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::default())
+        .title("终端自动应答")
+        .inner_size(1180.0, 800.0)
+        .min_inner_size(880.0, 560.0);
+    if let Some(current) = app
+        .webview_windows()
+        .into_values()
+        .find(|window| window.is_focused().unwrap_or(false))
+    {
+        if let (Ok(pos), Ok(size)) = (current.outer_position(), current.inner_size()) {
+            let scale = current.scale_factor().unwrap_or(1.0).max(1.0);
+            builder = builder
+                .inner_size(size.width as f64 / scale, size.height as f64 / scale)
+                .position(pos.x as f64 / scale + 28.0, pos.y as f64 / scale + 28.0);
+        }
+    }
+    builder.build().map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn new_window(app: AppHandle) -> Result<(), String> {
+    open_new_window(&app)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +97,17 @@ fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String
         });
     }
     Ok(sessions)
+}
+
+#[tauri::command]
+async fn create_terminal(
+    cwd: Option<String>,
+    command: Option<String>,
+    label: Option<String>,
+) -> Result<herdr::CreatedTerminal, String> {
+    tauri::async_runtime::spawn_blocking(move || herdr::create_terminal(cwd, command, label))
+        .await
+        .map_err(|err| format!("{err}"))?
 }
 
 #[tauri::command]
@@ -210,6 +253,7 @@ async fn install_update() -> Result<String, String> {
 
 fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     let ai_keys = MenuItem::with_id(app, "ai-keys", "密钥设置…", true, Some("CmdOrCtrl+,") )?;
+    let new_window = MenuItem::with_id(app, "new-window", "新建窗口", true, Some("CmdOrCtrl+N"))?;
     let close_window = PredefinedMenuItem::close_window(app, Some("关闭窗口"))?;
     let check_update = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
     let usage = MenuItem::with_id(app, "usage", "使用说明", true, Some("CmdOrCtrl+/"))?;
@@ -231,6 +275,7 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
                     &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
                     #[cfg(target_os = "macos")]
                     &PredefinedMenuItem::separator(app)?,
+                    &new_window,
                     &close_window,
                     &PredefinedMenuItem::quit(app, Some("退出"))?,
                 ],
@@ -260,7 +305,17 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     )?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
-        let _ = app.emit("app-menu", event.id().0.clone());
+        if event.id().0 == "new-window" {
+            let _ = open_new_window(app);
+            return;
+        }
+        let target = app
+            .webview_windows()
+            .into_values()
+            .find(|window| window.is_focused().unwrap_or(false));
+        if let Some(window) = target {
+            let _ = window.emit("app-menu", event.id().0.clone());
+        }
     });
     Ok(())
 }
@@ -269,13 +324,18 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             install_menu(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                window.app_handle().exit(0);
+                herdr_term::detach_label(window.label());
+                let app = window.app_handle();
+                if app.webview_windows().len() <= 1 {
+                    app.exit(0);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -295,7 +355,9 @@ pub fn run() {
             app_info,
             check_update,
             open_release_page,
-            install_update
+            install_update,
+            new_window,
+            create_terminal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

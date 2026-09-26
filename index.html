@@ -21,7 +21,11 @@
         </header>
         <div class="rail-head">
           <span>会话</span>
-          <button type="button" id="refresh-btn" class="ghost icon-btn" title="刷新">↻</button>
+          <span class="rail-tools">
+            <button type="button" id="new-term-btn" class="ghost rail-text" title="新建终端窗口">终端</button>
+            <button type="button" id="new-window-btn" class="ghost icon-btn" title="新建窗口">+</button>
+            <button type="button" id="refresh-btn" class="ghost icon-btn" title="刷新">↻</button>
+          </span>
         </div>
         <div id="herdr-banner" class="herdr-banner off">
           <span id="herdr-banner-text">未连接</span>
@@ -306,7 +310,7 @@
     <div id="usage-guide" class="guide hidden" role="dialog">
       <div class="guide-card">
         <h2>怎么用</h2>
-        <p class="guide-lead">左边选会话，中间看终端。循环和计划在右侧。</p>
+        <p class="guide-lead">左边选会话，中间看终端。循环和计划在右侧。⌘ N 再开一个窗口。</p>
         <div class="how-list">
           <div class="how-item">
             <span>1</span>
@@ -366,6 +370,37 @@
           <button type="button" id="about-close">关闭</button>
         </div>
       </div>
+    </div>
+    <div id="term-modal" class="guide hidden" role="dialog" aria-labelledby="term-title">
+      <form id="term-create" class="guide-card">
+        <h2 id="term-title">新建终端窗口</h2>
+        <p class="guide-lead">在 Herdr 里开一个新窗口，并接到中间的终端。先选目录，不需要手填。</p>
+        <div class="term-field">
+          <span>目录</span>
+          <div class="term-path">
+            <strong id="term-cwd-label">沿用当前工作区</strong>
+            <button type="button" id="term-pick">选择…</button>
+          </div>
+          <div id="term-cwd-list" class="term-paths"></div>
+          <input id="term-cwd" type="hidden" />
+        </div>
+        <label class="term-field">启动
+          <select id="term-kind">
+            <option value="shell">仅终端</option>
+            <option value="pi">Pi</option>
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+            <option value="grok">Grok</option>
+          </select>
+        </label>
+        <label class="term-field" id="term-command-row">命令
+          <input id="term-command" autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="guide-actions">
+          <button type="submit" class="primary">创建</button>
+          <button type="button" id="term-cancel">取消</button>
+        </div>
+      </form>
     </div>
     <input id="import-file" type="file" accept=".txt,.md,.json,.csv,.text" hidden />
     <div id="import-modal" class="guide hidden" role="dialog">

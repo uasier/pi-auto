@@ -112,10 +112,12 @@ pub fn list_panes() -> Result<(String, Vec<HerdrPane>), String> {
             .or_else(|| detected.get("display_agent").and_then(|v| v.as_str()))
             .unwrap_or("")
             .to_lowercase();
-        let kind = normalize_kind(&kind_raw);
-        if !AGENT_KINDS.contains(&kind.as_str()) {
-            continue;
-        }
+        let normalized = normalize_kind(&kind_raw);
+        let kind = if AGENT_KINDS.contains(&normalized.as_str()) {
+            normalized
+        } else {
+            "shell".to_string()
+        };
         let state = detected
             .get("agent_status")
             .and_then(|v| v.as_str())
@@ -224,8 +226,87 @@ fn agent_label(agent: &str) -> &'static str {
         "claude" => "Claude",
         "codex" => "Codex",
         "grok" => "Grok",
+        "shell" => "终端",
         _ => "Agent",
     }
+}
+
+fn expand_cwd(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| raw.to_string());
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return Path::new(&home).join(rest).display().to_string();
+        }
+    }
+    raw.to_string()
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedTerminal {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub cwd: String,
+    pub launch_error: Option<String>,
+}
+
+pub fn create_terminal(
+    cwd: Option<String>,
+    command: Option<String>,
+    label: Option<String>,
+) -> Result<CreatedTerminal, String> {
+    let sock = discover_socket().ok_or_else(|| "Herdr 未运行".to_string())?;
+    let mut params = json!({ "focus": true });
+    let cwd = cwd.map(|value| expand_cwd(&value)).filter(|value| !value.is_empty());
+    if let Some(cwd) = cwd.as_ref() {
+        if !Path::new(cwd).is_dir() {
+            return Err(format!("目录不存在：{cwd}"));
+        }
+        params["cwd"] = json!(cwd);
+    }
+    let label = label
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| cwd.as_ref().and_then(|path| Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned())));
+    if let Some(label) = label.as_ref() {
+        params["label"] = json!(label);
+    }
+    let result = rpc(&sock, "workspace.create", params)?;
+    if result.get("type").and_then(|v| v.as_str()) != Some("workspace_created") {
+        return Err("Herdr 没有创建终端窗口".into());
+    }
+    let pane_id = result
+        .pointer("/root_pane/pane_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if pane_id.is_empty() {
+        return Err("Herdr 没有返回新终端".into());
+    }
+    let workspace_id = result
+        .pointer("/workspace/workspace_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let cwd = result
+        .pointer("/root_pane/foreground_cwd")
+        .or_else(|| result.pointer("/root_pane/cwd"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let launch_error = match command.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+        Some(command) => send_pane_input(&pane_id, &command).err(),
+        None => None,
+    };
+    Ok(CreatedTerminal {
+        pane_id,
+        workspace_id,
+        cwd,
+        launch_error,
+    })
 }
 
 fn normalize_kind(raw: &str) -> String {

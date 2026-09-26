@@ -3,16 +3,17 @@
 //! Frame format matches herdr 0.9.1: `[u32 LE length][bincode standard payload]`.
 //! Variant indexes are frozen for protocol 22.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 const PROTOCOL_VERSION: u32 = 22;
 const MAX_FRAME: usize = 8 * 1024 * 1024;
@@ -111,7 +112,7 @@ struct Link {
     generation: u64,
 }
 
-static LINK: Mutex<Option<Link>> = Mutex::new(None);
+static LINKS: LazyLock<Mutex<HashMap<String, Link>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn client_socket() -> Result<PathBuf, String> {
@@ -176,8 +177,9 @@ struct TermBytesEvent {
 }
 
 #[tauri::command]
-pub fn term_attach(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<u64, String> {
-    term_detach()?;
+pub fn term_attach(window: WebviewWindow, pane_id: String, cols: u16, rows: u16) -> Result<u64, String> {
+    let label = window.label().to_string();
+    detach_label(&label);
     let pane_id = pane_id.trim().to_string();
     if pane_id.is_empty() {
         return Err("没有 pane".into());
@@ -218,37 +220,45 @@ pub fn term_attach(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
     )?;
     stream.set_read_timeout(None).ok();
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-    if GENERATION.load(Ordering::Relaxed) != generation {
-        let _ = write_msg(&mut stream, &ClientMessage::Detach);
-        return Err("终端接入被打断".into());
-    }
     let reader = stream.try_clone().map_err(|err| format!("复制连接失败：{err}"))?;
     {
-        let mut link = LINK.lock().map_err(|_| "终端锁失败".to_string())?;
-        *link = Some(Link {
-            writer: stream,
-            generation,
-        });
+        let mut links = LINKS.lock().map_err(|_| "终端锁失败".to_string())?;
+        links.insert(
+            label.clone(),
+            Link {
+                writer: stream,
+                generation,
+            },
+        );
     }
-    std::thread::spawn(move || read_loop(app, reader, generation));
+    let app = window.app_handle().clone();
+    std::thread::spawn(move || read_loop(app, label, reader, generation));
     Ok(generation)
 }
 
-fn read_loop(app: AppHandle, mut stream: UnixStream, generation: u64) {
+fn emit_to(app: &AppHandle, label: &str, event: &str, payload: impl serde::Serialize + Clone) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.emit(event, payload);
+    }
+}
+
+fn read_loop(app: AppHandle, label: String, mut stream: UnixStream, generation: u64) {
     loop {
-        if generation_closed(generation) {
+        if generation_closed(&label, generation) {
             break;
         }
         let payload = match read_frame(&mut stream) {
             Ok(payload) => payload,
             Err(_) => break,
         };
-        if generation_closed(generation) {
+        if generation_closed(&label, generation) {
             break;
         }
         match decode_server(&payload) {
             Ok(ServerMessage::Terminal(frame)) => {
-                let _ = app.emit(
+                emit_to(
+                    &app,
+                    &label,
                     "term-bytes",
                     TermBytesEvent {
                         generation,
@@ -260,7 +270,9 @@ fn read_loop(app: AppHandle, mut stream: UnixStream, generation: u64) {
                 );
             }
             Ok(ServerMessage::ServerShutdown { reason }) => {
-                let _ = app.emit(
+                emit_to(
+                    &app,
+                    &label,
                     "term-closed",
                     reason.unwrap_or_else(|| "Herdr 关闭了终端连接".into()),
                 );
@@ -269,34 +281,35 @@ fn read_loop(app: AppHandle, mut stream: UnixStream, generation: u64) {
             Ok(_) | Err(_) => {}
         }
     }
-    if !generation_closed(generation) {
-        let _ = app.emit("term-closed", "终端连接已断开");
+    if !generation_closed(&label, generation) {
+        emit_to(&app, &label, "term-closed", "终端连接已断开");
     }
 }
 
-fn generation_closed(generation: u64) -> bool {
-    LINK
+fn generation_closed(label: &str, generation: u64) -> bool {
+    LINKS
         .lock()
         .ok()
-        .and_then(|link| link.as_ref().map(|item| item.generation != generation))
+        .and_then(|links| links.get(label).map(|item| item.generation != generation))
         .unwrap_or(true)
 }
 
-fn with_writer(op: impl FnOnce(&mut UnixStream) -> Result<(), String>) -> Result<(), String> {
-    let mut link = LINK.lock().map_err(|_| "终端锁失败".to_string())?;
-    let link = link.as_mut().ok_or("终端未接入")?;
+fn with_writer(label: &str, op: impl FnOnce(&mut UnixStream) -> Result<(), String>) -> Result<(), String> {
+    let mut links = LINKS.lock().map_err(|_| "终端锁失败".to_string())?;
+    let link = links.get_mut(label).ok_or("终端未接入")?;
     op(&mut link.writer)
 }
 
 #[tauri::command]
-pub fn term_scroll(direction: String, lines: u16) -> Result<(), String> {
+pub fn term_scroll(window: WebviewWindow, direction: String, lines: u16) -> Result<(), String> {
+    let label = window.label().to_string();
     let direction = match direction.trim() {
         "up" => AttachScrollDirection::Up,
         "down" => AttachScrollDirection::Down,
         _ => return Err("滚动方向无效".into()),
     };
     let lines = lines.clamp(1, 3);
-    with_writer(|stream| {
+    with_writer(&label, |stream| {
         write_msg(
             stream,
             &ClientMessage::AttachScroll {
@@ -312,20 +325,22 @@ pub fn term_scroll(direction: String, lines: u16) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn term_input(bytes_b64: String) -> Result<(), String> {
+pub fn term_input(window: WebviewWindow, bytes_b64: String) -> Result<(), String> {
+    let label = window.label().to_string();
     let data = base64::engine::general_purpose::STANDARD
         .decode(bytes_b64.trim())
         .map_err(|err| format!("输入无效：{err}"))?;
     if data.is_empty() {
         return Ok(());
     }
-    with_writer(|stream| write_msg(stream, &ClientMessage::Input { data }))
+    with_writer(&label, |stream| write_msg(stream, &ClientMessage::Input { data }))
 }
 
 #[tauri::command]
-pub fn term_resize(cols: u16, rows: u16) -> Result<(), String> {
+pub fn term_resize(window: WebviewWindow, cols: u16, rows: u16) -> Result<(), String> {
+    let label = window.label().to_string();
     let (cols, rows) = clamp_size(cols, rows);
-    with_writer(|stream| {
+    with_writer(&label, |stream| {
         write_msg(
             stream,
             &ClientMessage::Resize {
@@ -340,11 +355,17 @@ pub fn term_resize(cols: u16, rows: u16) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn term_detach() -> Result<(), String> {
-    let mut link = LINK.lock().map_err(|_| "终端锁失败".to_string())?;
-    if let Some(mut current) = link.take() {
+pub fn term_detach(window: WebviewWindow) -> Result<(), String> {
+    detach_label(window.label());
+    Ok(())
+}
+
+pub fn detach_label(label: &str) {
+    let Ok(mut links) = LINKS.lock() else {
+        return;
+    };
+    if let Some(mut current) = links.remove(label) {
         let _ = write_msg(&mut current.writer, &ClientMessage::Detach);
         let _ = current.writer.shutdown(std::net::Shutdown::Both);
     }
-    Ok(())
 }

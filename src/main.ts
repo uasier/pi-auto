@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -70,12 +71,20 @@ type AppInfo = {
   repo: string;
 };
 
-const AGENT_ORDER = ["pi", "claude", "codex", "grok"] as const;
+const AGENT_ORDER = ["pi", "claude", "codex", "grok", "shell"] as const;
 const AGENT_META: Record<string, { label: string; hint: string }> = {
   pi: { label: "Pi", hint: "π" },
   claude: { label: "Claude", hint: "Anthropic" },
   codex: { label: "Codex", hint: "OpenAI" },
   grok: { label: "Grok", hint: "xAI" },
+  shell: { label: "终端", hint: "shell" },
+};
+const LAUNCH_COMMAND: Record<string, string> = {
+  shell: "",
+  pi: "pi",
+  claude: "claude",
+  codex: "codex",
+  grok: "grok",
 };
 
 function commitPrompt(task: TaskItem) {
@@ -94,6 +103,7 @@ let selectedId: string | null = null;
 const plans = new Map<string, Plan>();
 let pollTimer: number | null = null;
 let activeSheet: (typeof AGENT_ORDER)[number] = "pi";
+let followPane: { paneId: string; want: string; until: number } | null = null;
 let importDraft: string[] = [];
 let term: Terminal | null = null;
 let lastListSig = "";
@@ -2672,6 +2682,7 @@ async function poll() {
       log(`会话 ${selectedId} 已退出，计划仍保留`, true);
       selectSession(null);
     }
+    followCreatedPane();
     void refreshHerdrStatus();
     renderList();
     renderMain();
@@ -2682,6 +2693,122 @@ async function poll() {
     log(String(error), true);
   } finally {
     pollInFlight = false;
+  }
+}
+
+function followCreatedPane() {
+  const follow = followPane;
+  if (!follow) return;
+  if (Date.now() > follow.until) {
+    followPane = null;
+    return;
+  }
+  const found = sessions.find((item) => item.paneId === follow.paneId);
+  if (!found) return;
+  if (found.agent !== activeSheet && (AGENT_ORDER as readonly string[]).includes(found.agent)) {
+    activeSheet = found.agent as (typeof AGENT_ORDER)[number];
+    lastListSig = "";
+  }
+  if (selectedId !== found.id) selectSession(found.id);
+  if (found.agent === follow.want || (follow.want === "shell" && found.agent === "shell")) {
+    followPane = null;
+  }
+}
+
+const TERM_CWD_KEY = "pi-auto-term-cwd";
+
+function termCwdChoices() {
+  const seen = new Set<string>();
+  const items: string[] = [];
+  const add = (cwd: string) => {
+    const path = cwd.trim();
+    if (!path || path === "未知目录" || seen.has(path)) return;
+    seen.add(path);
+    items.push(path);
+  };
+  const current = selected();
+  if (current?.cwd) add(current.cwd);
+  for (const session of sessions) add(session.cwd);
+  add(localStorage.getItem(TERM_CWD_KEY) ?? "");
+  return items;
+}
+
+function setTermCwd(cwd: string) {
+  $<HTMLInputElement>("term-cwd").value = cwd;
+  const label = $("term-cwd-label");
+  label.textContent = cwd ? shortPath(cwd) : "沿用当前工作区";
+  label.title = cwd;
+  document.querySelectorAll<HTMLButtonElement>("#term-cwd-list button").forEach((button) => {
+    button.classList.toggle("on", (button.dataset.cwd ?? "") === cwd);
+  });
+  if (cwd) localStorage.setItem(TERM_CWD_KEY, cwd);
+  else localStorage.removeItem(TERM_CWD_KEY);
+}
+
+function renderTermPaths(preferred: string) {
+  const box = $("term-cwd-list");
+  const choices = termCwdChoices();
+  if (preferred && !choices.includes(preferred)) choices.unshift(preferred);
+  box.innerHTML = [
+    `<button type="button" data-cwd="">沿用当前工作区</button>`,
+    ...choices.map((cwd) => `<button type="button" data-cwd="${escapeHtml(cwd)}">${escapeHtml(shortPath(cwd))}</button>`),
+  ].join("");
+  box.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+    button.addEventListener("click", () => setTermCwd(button.dataset.cwd ?? ""));
+  });
+  setTermCwd(preferred);
+}
+
+async function pickTermCwd() {
+  const current = $<HTMLInputElement>("term-cwd").value || selected()?.cwd || undefined;
+  const picked = await open({
+    directory: true,
+    multiple: false,
+    title: "选择目录",
+    defaultPath: current,
+    canCreateDirectories: true,
+  });
+  if (typeof picked === "string" && picked) renderTermPaths(picked);
+}
+
+function showTermCreate() {
+  const kind = $<HTMLSelectElement>("term-kind");
+  $<HTMLInputElement>("term-command").value = LAUNCH_COMMAND[kind.value] ?? "";
+  $("term-command-row").classList.toggle("hidden", kind.value === "shell");
+  const preferred = selected()?.cwd || localStorage.getItem(TERM_CWD_KEY) || "";
+  renderTermPaths(preferred);
+  $("term-modal").classList.remove("hidden");
+}
+
+function hideTermCreate() {
+  $("term-modal").classList.add("hidden");
+}
+
+async function createTerminal(event: Event) {
+  event.preventDefault();
+  const kind = $<HTMLSelectElement>("term-kind").value;
+  const cwd = $<HTMLInputElement>("term-cwd").value.trim();
+  const command = kind === "shell" ? "" : $<HTMLInputElement>("term-command").value.trim();
+  const button = $<HTMLButtonElement>("term-create").querySelector("button[type=submit]");
+  if (button instanceof HTMLButtonElement) button.disabled = true;
+  try {
+    const created = await invoke<{ paneId: string; workspaceId: string; cwd: string; launchError?: string | null }>(
+      "create_terminal",
+      {
+        cwd: cwd || null,
+        command: command || null,
+        label: null,
+      },
+    );
+    followPane = { paneId: created.paneId, want: kind === "shell" ? "shell" : kind, until: Date.now() + 20000 };
+    hideTermCreate();
+    log(`已新建终端 ${created.paneId}${created.cwd ? ` · ${shortPath(created.cwd)}` : ""}`);
+    if (created.launchError) log(`启动命令失败：${created.launchError}`, true);
+    await poll();
+  } catch (error) {
+    log(`新建终端失败：${error}`, true);
+  } finally {
+    if (button instanceof HTMLButtonElement) button.disabled = false;
   }
 }
 
@@ -2884,6 +3011,25 @@ async function maybeAutoSend() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  $("new-window-btn").addEventListener("click", () => {
+    void invoke("new_window").catch((error) => log(`新建窗口失败：${error}`, true));
+  });
+  $("new-term-btn").addEventListener("click", () => showTermCreate());
+  $("term-pick").addEventListener("click", () => {
+    void pickTermCwd().catch((error) => log(`选择目录失败：${error}`, true));
+  });
+  $("term-cancel").addEventListener("click", () => hideTermCreate());
+  $("term-create").addEventListener("submit", (event) => {
+    void createTerminal(event);
+  });
+  $("term-modal").addEventListener("click", (event) => {
+    if (event.target === $("term-modal")) hideTermCreate();
+  });
+  $<HTMLSelectElement>("term-kind").addEventListener("change", () => {
+    const kind = $<HTMLSelectElement>("term-kind").value;
+    $<HTMLInputElement>("term-command").value = LAUNCH_COMMAND[kind] ?? "";
+    $("term-command-row").classList.toggle("hidden", kind === "shell");
+  });
   $("refresh-btn").addEventListener("click", () => {
     $("refresh-btn").classList.remove("spin");
     void $("refresh-btn").offsetWidth;
@@ -3047,6 +3193,10 @@ window.addEventListener("DOMContentLoaded", () => {
     baseInput(provider).addEventListener("input", mark);
   }
   window.addEventListener("keydown", (event) => {
+    if (!$("term-modal").classList.contains("hidden") && event.key === "Escape") {
+      hideTermCreate();
+      return;
+    }
     if ($("keys-modal").classList.contains("hidden")) return;
     if (event.key === "Escape") {
       event.preventDefault();
