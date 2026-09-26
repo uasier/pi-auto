@@ -39,6 +39,17 @@ fn new_window(app: AppHandle) -> Result<(), String> {
     open_new_window(&app)
 }
 
+#[tauri::command]
+fn resize_window(window: tauri::WebviewWindow, delta_height: f64) -> Result<(), String> {
+    let size = window.inner_size().map_err(|err| err.to_string())?;
+    let scale = window.scale_factor().map_err(|err| err.to_string())?.max(1.0);
+    let width = size.width as f64 / scale;
+    let height = (size.height as f64 / scale + delta_height).clamp(560.0, 1600.0);
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+        .map_err(|err| err.to_string())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
@@ -100,8 +111,25 @@ fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String
 }
 
 #[tauri::command]
-async fn refine_prompt(api_key: Option<String>, base_url: Option<String>, text: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || jev::refine_prompt(api_key, base_url, text))
+async fn complete_prompt(
+    api_key: Option<String>,
+    base_url: Option<String>,
+    text: String,
+    context: Option<String>,
+) -> Result<jev::CompleteResult, String> {
+    tauri::async_runtime::spawn_blocking(move || jev::complete_options(api_key, base_url, text, context))
+        .await
+        .map_err(|err| format!("{err}"))?
+}
+
+#[tauri::command]
+async fn refine_prompt(
+    api_key: Option<String>,
+    base_url: Option<String>,
+    text: String,
+    context: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || jev::refine_prompt(api_key, base_url, text, context))
         .await
         .map_err(|err| format!("{err}"))?
 }
@@ -229,6 +257,11 @@ struct AppInfo {
 }
 
 #[tauri::command]
+fn is_debug() -> bool {
+    cfg!(debug_assertions)
+}
+
+#[tauri::command]
 fn app_info() -> AppInfo {
     AppInfo {
         version: update::current_version().into(),
@@ -315,12 +348,14 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     app.on_menu_event(|app, event| {
         if event.id().0 == "new-window" {
             let _ = open_new_window(app);
-            return;
         }
-        let target = app
-            .webview_windows()
-            .into_values()
-            .find(|window| window.is_focused().unwrap_or(false));
+        let windows = app.webview_windows();
+        let target = windows
+            .values()
+            .find(|window| window.is_focused().unwrap_or(false))
+            .cloned()
+            .or_else(|| app.get_webview_window("main"))
+            .or_else(|| windows.into_values().next());
         if let Some(window) = target {
             let _ = window.emit("app-menu", event.id().0.clone());
         }
@@ -365,8 +400,11 @@ pub fn run() {
             open_release_page,
             install_update,
             new_window,
+            resize_window,
             create_terminal,
-            refine_prompt
+            is_debug,
+            refine_prompt,
+            complete_prompt
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

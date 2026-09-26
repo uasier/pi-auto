@@ -1,0 +1,67 @@
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-panel {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  background: var(--term);
+  border-color: #232833;
+}
+
+.preview-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--term);
+}
+
+.term-host {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: var(--term);
+}
+.term-host .xterm {
+  position: relative;
+  left: auto;
+  top: auto;
+  transform: none;
+}
+.term-host .xterm-viewport {
+  pointer-events: none;
+}
+
+.term-host.live {
+  display: block;
+  padding: 0;
+}
+
+.term-host.live .xterm,
+.term-host.live .xterm-scrollable-element {
+  height: 100%;
+  width: 100%;
+}
+.term-host.live:not(.ready) .xterm {
+  visibility: hidden;
+}
+
+.preview-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  align-items: stretch;
+  gap: 0;
+  color: var(--muted);
+}

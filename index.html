@@ -56,12 +56,17 @@
             </div>
             <button type="button" id="toggle-rail" class="ghost">会话</button>
             <button type="button" id="toggle-plan" class="ghost">计划 <span id="queue-count" class="count-badge">0</span></button>
+            <span id="debug-flag" class="debug-flag hidden">DEBUG</span>
           </div>
         </header>
 
         <div class="panel preview-panel">
           <div class="preview-stage">
             <div id="term-host" class="term-host hidden"></div>
+            <div id="complete-picker" class="complete-picker hidden" role="listbox" aria-label="下一步">
+              <div class="complete-head"><span id="complete-intent">下一步</span><em>1 / 2 / 3 选择，Esc 取消</em></div>
+              <div id="complete-options"></div>
+            </div>
             <div id="preview-empty" class="preview-empty">
               <div class="idle-play">
                 <canvas id="idle-game" width="240" height="240" aria-label="贪吃蛇"></canvas>
@@ -196,11 +201,15 @@
             <div id="commit-run-state" class="run-state">任务完成后提交</div>
           </section>
         </div>
-        <div class="panel log-panel">
-          <div class="panel-title">日志</div>
-          <div id="log" class="log"></div>
-        </div>
       </aside>
+      <footer id="log-dock" class="log-dock">
+        <button type="button" id="log-toggle" class="log-toggle">
+          <span class="log-mark">日志</span>
+          <span id="log-latest">暂无日志</span>
+          <span id="log-caret" class="log-caret">展开</span>
+        </button>
+        <div id="log" class="log"></div>
+      </footer>
     </div>
 
     <div id="herdr-guide" class="guide hidden" role="dialog">
@@ -370,25 +379,6 @@
           <button type="button" id="about-close">关闭</button>
         </div>
       </div>
-    </div>
-    <div id="refine-modal" class="guide hidden" role="dialog" aria-labelledby="refine-title">
-      <form id="refine-form" class="guide-card">
-        <h2 id="refine-title">优化对话</h2>
-        <p class="guide-lead">把本地请求整理成更完整的问题。不新增你没提到的功能。使用 DeepSeek。快捷键 ⌘⇧O。</p>
-        <label class="term-field">原请求
-          <textarea id="refine-source" rows="4" placeholder="选中终端文字，或写在这里"></textarea>
-        </label>
-        <label class="term-field">优化后
-          <textarea id="refine-result" rows="6" placeholder="优化结果会出现在这里"></textarea>
-        </label>
-        <p id="refine-note" class="key-note"></p>
-        <div class="guide-actions">
-          <button type="submit" id="refine-run" class="primary">优化</button>
-          <button type="button" id="refine-send">发送</button>
-          <button type="button" id="refine-plan">加入计划</button>
-          <button type="button" id="refine-close">关闭</button>
-        </div>
-      </form>
     </div>
     <div id="term-modal" class="guide hidden" role="dialog" aria-labelledby="term-title">
       <form id="term-create" class="guide-card">

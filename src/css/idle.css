@@ -1,0 +1,122 @@
+
+.idle-play {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.idle-game-log {
+  min-width: 0;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  padding: 12px 12px 16px;
+  background: #101218;
+}
+
+.idle-game-log-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#idle-game-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: "SF Mono", ui-monospace, Menlo, "PingFang SC", "Hiragino Sans GB", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.idle-log-item { color: var(--term-fg); word-break: break-word; }
+.idle-log-item.err { color: #e3aaa4; }
+.idle-log-item .time { color: var(--muted); margin-right: 6px; }
+
+#idle-game,
+#idle-dino {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--term);
+}
+
+#idle-game {
+  width: 240px;
+  height: 240px;
+}
+
+#idle-dino {
+  width: min(100%, 480px);
+  height: 150px;
+}
+
+.idle-game-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.idle-game-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.idle-game-controls select {
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0 6px;
+}
+
+.idle-start {
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--bg);
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.idle-start:disabled {
+  opacity: 0.45;
+}
+
+.idle-game-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.idle-game-meta strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.idle-game-meta span { font-size: 12px; }
+
+.preview-empty span { font-size: 12px; }
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  outline: none;
+}
+
+textarea:focus { border-color: var(--focus); }
+
