@@ -16,7 +16,7 @@ fetch("https://api.github.com/repos/uasier/pi-auto/releases/latest")
     if (apple) arm.href = apple.browser_download_url;
     if (x64) intel.href = x64.browser_download_url;
     if (release.tag_name) {
-      note.textContent = `${release.tag_name} · 安装包未签名。首次请右键 App，选择「打开」。`;
+      note.textContent = `${release.tag_name} · 若提示已损坏，执行 xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"`;
     }
   })
   .catch(() => {

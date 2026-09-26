@@ -371,6 +371,25 @@
         </div>
       </div>
     </div>
+    <div id="refine-modal" class="guide hidden" role="dialog" aria-labelledby="refine-title">
+      <form id="refine-form" class="guide-card">
+        <h2 id="refine-title">优化对话</h2>
+        <p class="guide-lead">把本地请求整理成更完整的问题。不新增你没提到的功能。使用 DeepSeek。快捷键 ⌘⇧O。</p>
+        <label class="term-field">原请求
+          <textarea id="refine-source" rows="4" placeholder="选中终端文字，或写在这里"></textarea>
+        </label>
+        <label class="term-field">优化后
+          <textarea id="refine-result" rows="6" placeholder="优化结果会出现在这里"></textarea>
+        </label>
+        <p id="refine-note" class="key-note"></p>
+        <div class="guide-actions">
+          <button type="submit" id="refine-run" class="primary">优化</button>
+          <button type="button" id="refine-send">发送</button>
+          <button type="button" id="refine-plan">加入计划</button>
+          <button type="button" id="refine-close">关闭</button>
+        </div>
+      </form>
+    </div>
     <div id="term-modal" class="guide hidden" role="dialog" aria-labelledby="term-title">
       <form id="term-create" class="guide-card">
         <h2 id="term-title">新建终端窗口</h2>

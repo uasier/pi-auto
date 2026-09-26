@@ -104,7 +104,11 @@ jobs:
             - macOS Apple Silicon：`pi-auto_*_aarch64.dmg`
             - macOS Intel：`pi-auto_*_x64.dmg`
 
-            安装包未签名。macOS 请右键 App 选择「打开」。
+            安装包未签名。若提示「已损坏，无法打开」，把 App 放进「应用程序」后执行：
+
+            ```bash
+            xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"
+            ```
 
             应用内点版本号可检查更新并下载当前系统对应安装包。
           releaseDraft: false

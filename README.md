@@ -15,7 +15,13 @@
 - macOS Apple Silicon：`pi-auto_*_aarch64.dmg`
 - macOS Intel：`pi-auto_*_x64.dmg`
 
-安装包未签名。首次请右键 App → 打开。菜单里的「检查更新…」会对照最新 tag 下载安装包。
+安装包未签名。从浏览器下载后，macOS 会把它标成「已损坏」。把 App 拖进「应用程序」后，在终端执行：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"
+```
+
+然后再打开。菜单里的「检查更新…」会对照最新 tag 下载安装包。
 
 > 更新检查默认仓库是 `uasier/pi-auto`。fork 后改 `src-tauri/src/update.rs` 里的 `DEFAULT_REPO`，或设置 `PI_AUTO_GITHUB_REPO`。
 
@@ -81,6 +87,7 @@
 
 - **密钥设置…** ⌘ ,
 - **检查更新…**
+- **优化对话…** ⌘⇧O。把选中的本地请求改写成更完整的问题，再发送或加入计划
 - **使用说明** ⌘ /
 - **新建窗口** ⌘ N。每个窗口各自选会话、看终端
 - **关闭窗口** ⌘ W。关掉最后一个窗口会退出，不留在后台
@@ -119,7 +126,7 @@ git push origin HEAD && git push origin v0.2.5
 ## 注意事项
 
 - Git 根目录是本目录（`pi-auto/`），不要把上层中文文件夹当作仓库。
-- 安装包未签名。macOS 请右键选择「打开」。
+- 安装包未签名。下载后若提示已损坏，执行 `xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"`。
 - 更新检查走 GitHub Releases API。仓库需公开，或自行处理 token。
 - 发布资源名固定为 `pi-auto_[version]_[arch].dmg`，避免中文产品名被剥掉。
 - Herdr 要先于本应用运行。上下文压缩依赖终端里能读到的百分比。

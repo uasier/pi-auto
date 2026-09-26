@@ -2488,6 +2488,92 @@ function confirmImport() {
   hideImport();
 }
 
+let refineBusy = false;
+let refineOpenedAt = 0;
+
+function hideRefine() {
+  $("refine-modal").classList.add("hidden");
+}
+
+function localRequestText() {
+  const selectedText = term?.getSelection()?.trim() ?? "";
+  if (selectedText) return selectedText;
+  const active = document.activeElement;
+  if (active instanceof HTMLTextAreaElement && active.id !== "refine-result" && active.value.trim()) {
+    return active.value.trim();
+  }
+  return $<HTMLTextAreaElement>("plan-add-text").value.trim();
+}
+
+async function openRefine() {
+  const now = Date.now();
+  if (now - refineOpenedAt < 400) return;
+  refineOpenedAt = now;
+  const source = $<HTMLTextAreaElement>("refine-source");
+  const incoming = localRequestText();
+  if (incoming && document.activeElement !== source) source.value = incoming;
+  $("refine-note").textContent = "";
+  $("refine-modal").classList.remove("hidden");
+  if (source.value.trim()) await runRefine();
+  else source.focus();
+}
+
+async function runRefine() {
+  if (refineBusy) return;
+  const text = $<HTMLTextAreaElement>("refine-source").value.trim();
+  const note = $("refine-note");
+  if (!text) {
+    note.textContent = "先选中终端文字，或在上面写下请求";
+    return;
+  }
+  refineBusy = true;
+  $<HTMLButtonElement>("refine-run").disabled = true;
+  note.textContent = "正在优化…";
+  try {
+    const result = await invoke<string>("refine_prompt", {
+      apiKey: localStorage.getItem(DEEPSEEK_KEY_STORAGE)?.trim() || null,
+      baseUrl: providerBase("deepseek") || null,
+      text,
+    });
+    $<HTMLTextAreaElement>("refine-result").value = result;
+    note.textContent = "";
+  } catch (error) {
+    note.textContent = String(error);
+  } finally {
+    refineBusy = false;
+    $<HTMLButtonElement>("refine-run").disabled = false;
+  }
+}
+
+async function sendRefined() {
+  const text = $<HTMLTextAreaElement>("refine-result").value.trim();
+  const session = selected();
+  if (!text) {
+    $("refine-note").textContent = "还没有优化结果";
+    return;
+  }
+  if (!session) {
+    $("refine-note").textContent = "请先选择一个会话";
+    return;
+  }
+  try {
+    await sendNow(session, activePlan(), text, true);
+    hideRefine();
+  } catch (error) {
+    $("refine-note").textContent = String(error);
+  }
+}
+
+function addRefinedToPlan() {
+  const text = $<HTMLTextAreaElement>("refine-result").value.trim();
+  if (!text) {
+    $("refine-note").textContent = "还没有优化结果";
+    return;
+  }
+  addPlanTask(text);
+  hideRefine();
+}
+
 async function sendNow(session: AgentSession, plan: Plan | null, text: string, force: boolean) {
   const result = await invoke<string>("send_to_session", {
     id: session.id,
@@ -3216,6 +3302,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   void listen<string>("app-menu", (event) => {
     if (event.payload === "ai-keys") showKeys();
+    if (event.payload === "refine") void openRefine();
     if (event.payload === "usage") showUsageGuide();
     if (event.payload === "check-update") {
       showAbout();
@@ -3330,7 +3417,26 @@ window.addEventListener("DOMContentLoaded", () => {
     keyInput(provider).addEventListener("input", mark);
     baseInput(provider).addEventListener("input", mark);
   }
+  $("refine-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runRefine();
+  });
+  $("refine-send").addEventListener("click", () => void sendRefined());
+  $("refine-plan").addEventListener("click", () => addRefinedToPlan());
+  $("refine-close").addEventListener("click", () => hideRefine());
+  $("refine-modal").addEventListener("click", (event) => {
+    if (event.target === $("refine-modal")) hideRefine();
+  });
   window.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
+      event.preventDefault();
+      void openRefine();
+      return;
+    }
+    if (!$("refine-modal").classList.contains("hidden") && event.key === "Escape") {
+      hideRefine();
+      return;
+    }
     if (!$("term-modal").classList.contains("hidden") && event.key === "Escape") {
       hideTermCreate();
       return;

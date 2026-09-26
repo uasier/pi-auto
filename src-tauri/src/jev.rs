@@ -643,6 +643,74 @@ fn truncate(text: &str, max_chars: usize) -> String {
     out
 }
 
+pub fn refine_prompt(api_key: Option<String>, base_url: Option<String>, text: String) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("没有可优化的请求".into());
+    }
+    let key = resolve_key("deepseek", api_key)?.unwrap_or_default();
+    if key.is_empty() {
+        return Err("未配置 DeepSeek API Key。请在系统菜单「密钥设置」中填写".into());
+    }
+    let endpoint = service_endpoint(
+        base_url,
+        &["DEEPSEEK_BASE_URL"],
+        "https://api.deepseek.com",
+        "/chat/completions",
+    );
+    let body = json!({
+        "model": std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| DEEPSEEK_MODEL.into()),
+        "temperature": 0.2,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你把用户的本地请求改写成一条给编程助手的问题。保留原意，不新增用户没提到的功能或文件。补上目标、范围和完成标准，让助手能直接处理。原话已经清楚时只做少量整理。用用户的语言。只输出改写后的问题，不要解释，不要加标题。"
+            },
+            {
+                "role": "user",
+                "content": truncate(text, 4000)
+            }
+        ]
+    });
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .user_agent("pi-auto")
+        .build()
+        .map_err(|e| format!("创建 DeepSeek 客户端失败：{e}"))?;
+    let response = client
+        .post(&endpoint)
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("DeepSeek 请求失败：{e}"))?;
+    let status = response.status();
+    let raw = response
+        .text()
+        .map_err(|e| format!("DeepSeek 响应读取失败：{e}"))?;
+    if !status.is_success() {
+        return Err(format!("DeepSeek HTTP {}：{}", status.as_u16(), truncate(&raw, 240)));
+    }
+    let value: Value = serde_json::from_str(&raw).map_err(|e| format!("DeepSeek JSON 无效：{e}"))?;
+    let content = value
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let content = strip_fence(content);
+    if content.is_empty() {
+        return Err("DeepSeek 没有返回优化后的问题".into());
+    }
+    Ok(content)
+}
+
+fn strip_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return trimmed.to_string();
+    };
+    let rest = rest.trim_start_matches(|ch: char| ch.is_ascii_alphanumeric()).trim_start();
+    rest.strip_suffix("```").unwrap_or(rest).trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{laya_endpoint, normalize_choice, parse_decision, parse_deepseek};

@@ -100,6 +100,13 @@ fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String
 }
 
 #[tauri::command]
+async fn refine_prompt(api_key: Option<String>, base_url: Option<String>, text: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || jev::refine_prompt(api_key, base_url, text))
+        .await
+        .map_err(|err| format!("{err}"))?
+}
+
+#[tauri::command]
 async fn create_terminal(
     cwd: Option<String>,
     command: Option<String>,
@@ -256,6 +263,7 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     let new_window = MenuItem::with_id(app, "new-window", "新建窗口", true, Some("CmdOrCtrl+N"))?;
     let close_window = PredefinedMenuItem::close_window(app, Some("关闭窗口"))?;
     let check_update = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
+    let refine = MenuItem::with_id(app, "refine", "优化对话…", true, Some("CmdOrCtrl+Shift+O"))?;
     let usage = MenuItem::with_id(app, "usage", "使用说明", true, Some("CmdOrCtrl+/"))?;
     let menu = Menu::with_items(
         app,
@@ -299,7 +307,7 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
                 tauri::menu::HELP_SUBMENU_ID,
                 "说明",
                 true,
-                &[&usage],
+                &[&refine, &usage],
             )?,
         ],
     )?;
@@ -357,7 +365,8 @@ pub fn run() {
             open_release_page,
             install_update,
             new_window,
-            create_terminal
+            create_terminal,
+            refine_prompt
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

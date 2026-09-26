@@ -35,7 +35,7 @@
           <a id="dl-intel" href="https://github.com/uasier/pi-auto/releases/latest">Intel</a>
           <a class="quiet" href="https://github.com/uasier/pi-auto">查看源码</a>
         </div>
-        <p id="dl-note" class="note">安装包未签名。首次请右键 App，选择「打开」。</p>
+        <p id="dl-note" class="note">若提示已损坏，把 App 放进「应用程序」后执行 <code>xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"</code>。</p>
       </section>
 
       <figure class="shot">
@@ -114,7 +114,7 @@
           <li>在 Herdr pane 里运行 agent。普通终端无法接入。</li>
           <li>确认本机有 <code>~/.config/herdr/herdr.sock</code>。</li>
         </ol>
-        <p class="note">⌘ N 新建窗口。关掉最后一个窗口会退出，不留在后台。安装包未签名，首次请右键选择「打开」。</p>
+        <p class="note">⌘ N 新建窗口。关掉最后一个窗口会退出，不留在后台。若提示已损坏，去掉隔离标记后再打开。</p>
       </section>
     </main>
 
