@@ -56,26 +56,20 @@
         </header>
 
         <div class="panel preview-panel">
-          <div class="term-chrome">
-            <span id="preview-hint" class="term-hint"></span>
-            <span id="live-badge" class="live-badge">—</span>
-          </div>
           <div class="preview-stage">
-            <img id="preview-image" class="preview-image hidden" alt="终端画面" />
             <div id="term-host" class="term-host hidden"></div>
-            <pre id="preview" class="preview hidden"></pre>
             <div id="preview-empty" class="preview-empty">
               <div class="idle-play">
                 <canvas id="idle-game" width="240" height="240" aria-label="贪吃蛇"></canvas>
+                <canvas id="idle-dino" class="hidden" width="480" height="150" aria-label="恐龙"></canvas>
                 <div class="idle-game-controls">
-                  <label>难度
-                    <select id="idle-difficulty">
-                      <option value="easy">简单</option>
-                      <option value="normal" selected>普通</option>
-                      <option value="hard">困难</option>
+                  <label>游戏
+                    <select id="idle-game-kind">
+                      <option value="snake">贪吃蛇</option>
+                      <option value="dino">恐龙</option>
                     </select>
                   </label>
-                  <label>驱动
+                  <label id="idle-driver-label">驱动
                     <select id="idle-driver">
                       <option value="manual">手动</option>
                       <option value="jev" id="idle-driver-jev" disabled>Jev 未接入</option>
@@ -89,27 +83,38 @@
                   <span id="idle-game-hint">方向键移动 · 选会话后停止</span>
                 </div>
               </div>
-              <aside class="idle-game-log" aria-label="贪吃蛇日志">
-                <div class="idle-game-log-title">决策日志</div>
-                <div id="idle-game-log-list"></div>
+              <aside class="idle-game-log" aria-label="游戏记录">
+                <div id="idle-snake-log">
+                  <div class="idle-game-log-title">决策日志</div>
+                  <div id="idle-game-log-list"></div>
+                </div>
+                <div id="idle-dino-log" class="hidden">
+                  <div class="idle-game-log-title">最高分 <strong id="idle-dino-best">0</strong></div>
+                  <div id="idle-dino-log-list"></div>
+                </div>
               </aside>
             </div>
           </div>
         </div>
 
-        <div class="panel composer">
-          <textarea
-            id="task-input"
-            placeholder="输入后发送  ·  ⌘ Enter"
-          ></textarea>
-          <div class="composer-bar">
-            <span class="grow"></span>
-            <button type="button" id="send-btn" class="primary" disabled>发送</button>
-          </div>
-        </div>
       </section>
 
-      <aside class="drawer" id="plan-drawer">
+      <aside class="drawer">
+        <div class="panel plan-panel">
+          <div class="panel-title">
+            计划
+            <span class="plan-tools">
+              <button type="button" id="import-btn">导入</button>
+            </span>
+          </div>
+          <form id="plan-add" class="plan-add">
+            <textarea id="plan-add-text" rows="2" placeholder="写一条任务"></textarea>
+            <button type="submit" class="primary">添加</button>
+          </form>
+          <ol id="queue-list" class="queue-list">
+            <li class="empty">还没有任务</li>
+          </ol>
+        </div>
         <div class="panel run-card">
           <div class="panel-title">执行 <span id="plan-bound" class="count-badge">未绑定</span></div>
           <div class="loop-meter">
@@ -187,18 +192,6 @@
             <div id="commit-run-state" class="run-state">任务完成后提交</div>
           </section>
         </div>
-        <div class="panel plan-panel">
-          <div class="panel-title">
-            计划
-            <span class="plan-tools">
-              <button type="button" id="queue-btn" class="primary" disabled>加入计划</button>
-              <button type="button" id="import-btn">导入</button>
-            </span>
-          </div>
-          <ol id="queue-list" class="queue-list">
-            <li class="empty">还没有任务</li>
-          </ol>
-        </div>
         <div class="panel log-panel">
           <div class="panel-title">日志</div>
           <div id="log" class="log"></div>
@@ -208,7 +201,6 @@
 
     <div id="herdr-guide" class="guide hidden" role="dialog">
       <div class="guide-card">
-        <img src="/src/assets/app-icon.png" class="guide-icon" alt="" />
         <h2>安装并启动 Herdr</h2>
         <p class="guide-lead">本工具只连接 Herdr pane。请先安装 Herdr，再在 pane 里打开 Pi / Claude / Codex / Grok。</p>
         <div class="perm-item">
@@ -217,7 +209,7 @@
             <span class="perm-flag">macOS / Linux</span>
           </div>
           <p>在终端执行官方安装脚本：</p>
-          <pre class="cmd" id="herdr-install-cmd">curl -fsSL https://herdr.dev/install.sh | sh</pre>
+          <pre class="cmd">curl -fsSL https://herdr.dev/install.sh | sh</pre>
           <button type="button" id="copy-herdr-install">复制安装命令</button>
         </div>
         <div class="perm-item">
@@ -314,7 +306,7 @@
     <div id="usage-guide" class="guide hidden" role="dialog">
       <div class="guide-card">
         <h2>怎么用</h2>
-        <p class="guide-lead">左边选会话，中间看终端并发送。循环和计划在右侧。</p>
+        <p class="guide-lead">左边选会话，中间看终端。循环和计划在右侧。</p>
         <div class="how-list">
           <div class="how-item">
             <span>1</span>
@@ -326,19 +318,12 @@
           <div class="how-item">
             <span>2</span>
             <div>
-              <strong>直接发一句话</strong>
-              <p>下方输入框写内容，点右下角「发送」，或 ⌘ / Ctrl + Enter。</p>
+              <strong>排任务计划</strong>
+              <p>在右侧「计划」里添加或编辑任务，也可以导入。计划只属于当前选中的窗口。</p>
             </div>
           </div>
           <div class="how-item">
             <span>3</span>
-            <div>
-              <strong>排任务计划</strong>
-              <p>点「计划」→「加入计划」或「导入」。计划只属于当前选中的窗口，换会话不会带走任务。</p>
-            </div>
-          </div>
-          <div class="how-item">
-            <span>4</span>
             <div>
               <strong>开始循环</strong>
               <p>空闲后自动发下一条。可选提交、压缩上下文。画面 5 分钟几乎不变会输入「继续」。打开自动续跑后，由 Jev、DeepSeek 或 Laya 选下一步。</p>
@@ -353,7 +338,6 @@
     </div>
     <div id="about-modal" class="guide hidden" role="dialog">
       <div class="guide-card">
-        <img src="/src/assets/app-icon.png" class="guide-icon" alt="" />
         <h2>关于与更新</h2>
         <p class="guide-lead">安装包由 GitHub Releases 发布。启动后会定期检查最新 tag，也可在此手动检查并下载。</p>
         <div class="about-grid">

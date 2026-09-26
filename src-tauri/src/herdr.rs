@@ -22,14 +22,22 @@ pub struct HerdrStatus {
 #[derive(Debug, Clone)]
 pub struct HerdrPane {
     pub pane_id: String,
+    pub title: String,
     pub agent: String,
     pub agent_label: String,
     pub state: String,
     pub cwd: String,
-    pub title: String,
-    pub interactive_ready: bool,
-    pub cols: u16,
-    pub rows: u16,
+}
+
+fn pane_title(wire: &Value) -> String {
+    let raw = wire
+        .get("terminal_title_stripped")
+        .or_else(|| wire.get("terminal_title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let raw = raw.trim_start_matches(['π', 'Π', 'π']).trim();
+    raw.trim_start_matches('-').trim().to_string()
 }
 
 pub fn discover_socket() -> Option<PathBuf> {
@@ -91,28 +99,6 @@ pub fn list_panes() -> Result<(String, Vec<HerdrPane>), String> {
             agents_by_pane.insert(id.to_string(), agent);
         }
     }
-    let mut size_by_pane = std::collections::HashMap::new();
-    if let Some(layouts) = snapshot.get("layouts").and_then(|v| v.as_array()) {
-        for layout in layouts {
-            let Some(panes) = layout.get("panes").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            for pane in panes {
-                let Some(id) = pane.get("pane_id").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                let Some(rect) = pane.get("rect") else {
-                    continue;
-                };
-                let width = rect.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
-                let height = rect.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
-                if width > 0 && height > 0 {
-                    size_by_pane.insert(id.to_string(), (width as u16, height as u16));
-                }
-            }
-        }
-    }
-
     let mut panes = Vec::new();
     for wire in panes_wire {
         let pane_id = match wire.get("pane_id").and_then(|v| v.as_str()) {
@@ -141,32 +127,13 @@ pub fn list_panes() -> Result<(String, Vec<HerdrPane>), String> {
             .or_else(|| wire.get("cwd").and_then(|v| v.as_str()))
             .unwrap_or("")
             .to_string();
-        let title = ["label", "title", "terminal_title_stripped"]
-            .iter()
-            .find_map(|k| wire.get(*k).and_then(|v| v.as_str()))
-            .unwrap_or("")
-            .to_string();
-        let (cols, rows) = size_by_pane.get(&pane_id).copied().unwrap_or_else(|| {
-            let rows = wire
-                .get("scroll")
-                .and_then(|v| v.get("viewport_rows"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(24) as u16;
-            (80, rows.max(8))
-        });
         panes.push(HerdrPane {
             pane_id,
+            title: pane_title(&wire),
             agent: kind.clone(),
             agent_label: agent_label(&kind).to_string(),
             state,
             cwd,
-            title,
-            interactive_ready: detected
-                .get("interactive_ready")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            cols,
-            rows,
         });
     }
     Ok((endpoint, panes))

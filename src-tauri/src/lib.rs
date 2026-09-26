@@ -1,4 +1,5 @@
 mod herdr;
+mod herdr_term;
 mod jev;
 mod update;
 
@@ -11,18 +12,15 @@ use tauri::{Emitter, Manager};
 pub struct AgentSession {
     pub id: String,
     pub pane_id: String,
+    pub title: String,
     pub agent: String,
     pub agent_label: String,
     pub agent_state: String,
     pub cwd: String,
-    pub title: String,
     pub idle: bool,
     pub confidence: String,
     pub reason: String,
     pub preview: String,
-    pub interactive_ready: bool,
-    pub cols: u16,
-    pub rows: u16,
 }
 
 fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String> {
@@ -55,18 +53,15 @@ fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String
         sessions.push(AgentSession {
             id,
             pane_id: pane.pane_id,
+            title: pane.title,
             agent: pane.agent,
             agent_label: pane.agent_label,
             agent_state: pane.state,
             cwd: pane.cwd,
-            title: pane.title,
             idle,
             confidence: confidence.into(),
             reason,
             preview,
-            interactive_ready: pane.interactive_ready,
-            cols: pane.cols,
-            rows: pane.rows,
         });
     }
     Ok(sessions)
@@ -287,6 +282,11 @@ pub fn run() {
             list_sessions,
             send_to_session,
             nudge_session,
+            herdr_term::term_attach,
+            herdr_term::term_input,
+            herdr_term::term_scroll,
+            herdr_term::term_resize,
+            herdr_term::term_detach,
             read_session_text,
             jev_choose,
             probe_decision,

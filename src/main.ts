@@ -1,24 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 type AgentSession = {
   id: string;
   paneId: string;
+  title: string;
   agent: string;
   agentLabel: string;
   agentState: string;
   cwd: string;
-  title: string;
   idle: boolean;
   confidence: string;
   reason: string;
   preview: string;
-  interactiveReady: boolean;
-  cols: number;
-  rows: number;
 };
 
 type TaskStatus = "pending" | "running" | "committing" | "done";
@@ -39,6 +37,7 @@ type Plan = {
   sentAt: number | null;
   planRunning: boolean;
   compacting: boolean;
+  compactFrom: number | null;
   needCompact: boolean;
   loopRounds: number;
   idleMs: number;
@@ -79,13 +78,6 @@ const AGENT_META: Record<string, { label: string; hint: string }> = {
   grok: { label: "Grok", hint: "xAI" },
 };
 
-const COMMIT_NOTE = `【完成要求】本任务做完后，请把这次改动提交到 git：
-1. 查看 git status / diff，确认只包含这次任务相关文件
-2. git add 相关文件
-3. git commit，message 用中文概括完成了什么
-4. 不要 push，除非我另外要求
-不要做无关重构。`;
-
 function commitPrompt(task: TaskItem) {
   return `任务「${task.title}」的功能改动已经完成。现在请立刻做 git 提交，不要继续改功能代码。
 
@@ -104,11 +96,10 @@ let pollTimer: number | null = null;
 let activeSheet: (typeof AGENT_ORDER)[number] = "pi";
 let importDraft: string[] = [];
 let term: Terminal | null = null;
-let lastTermText = "";
-let lastTermCols = 0;
-let lastTermRows = 0;
 let lastListSig = "";
 let lastQueueSig = "";
+let editingTaskId: string | null = null;
+let editingDraft = "";
 let lastHeadSig = "";
 let lastHerdrText = "";
 let herdrGuideAutoShown = false;
@@ -132,7 +123,6 @@ const stallNudging = new Set<string>();
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
-const taskInput = () => $<HTMLTextAreaElement>("task-input");
 const loopRoundsInput = () => $<HTMLInputElement>("loop-rounds");
 const idleMsInput = () => $<HTMLInputElement>("idle-ms");
 const commitAfterInput = () => $<HTMLInputElement>("commit-after");
@@ -180,6 +170,7 @@ function emptyPlan(): Plan {
     sentAt: null,
     planRunning: false,
     compacting: false,
+    compactFrom: null,
     needCompact: true,
     loopRounds: 1,
     idleMs: 2,
@@ -233,7 +224,6 @@ function selectSession(id: string | null) {
   lastQueueSig = "";
   lastHeadSig = "";
   lastListSig = "";
-  lastTermText = "";
   renderAll();
 }
 
@@ -258,6 +248,14 @@ function escapeHtml(text: string) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function sessionLabel(session: { paneId: string; cwd: string; title?: string }) {
+  const title = session.title?.replace(/^[\s\-–—]+/, "").trim();
+  if (title) return title;
+  const path = shortPath(session.cwd);
+  const name = path.split("/").filter(Boolean).pop();
+  return name && name !== "~" ? name : session.paneId;
 }
 
 function shortPath(cwd: string) {
@@ -338,6 +336,40 @@ function stallPreviewIds(now = Date.now()) {
   return ids;
 }
 
+function pollPreviewIds(now = Date.now()) {
+  const ids = new Set(stallPreviewIds(now));
+  for (const [id, plan] of plans) {
+    if (plan.planRunning && plan.compacting) ids.add(id);
+  }
+  return [...ids];
+}
+
+function compactDoneText(preview: string) {
+  const tail = stripAnsi(preview).replace(/\r/g, "").slice(-4000);
+  return /compacted|compact(?:ion)? complete|conversation compacted|context compacted|已压缩|压缩完成|compact summary/i.test(tail);
+}
+
+function agentBack(session: AgentSession) {
+  return session.idle || session.agentState === "blocked" || session.agentState === "done";
+}
+
+function compactEvidence(session: AgentSession, plan: Plan, ctx: number | null) {
+  const dropped = ctx != null && ctx < compactThreshold(plan);
+  const fell = plan.compactFrom != null && ctx != null && ctx <= plan.compactFrom - 8;
+  const saidDone = compactDoneText(session.preview);
+  return { dropped, fell, saidDone, ready: saidDone || dropped || fell };
+}
+
+function finishCompact(session: AgentSession, plan: Plan, reason: string) {
+  plan.compacting = false;
+  plan.compactFrom = null;
+  plan.phase = "idle";
+  plan.idleSince = Date.now();
+  plan.sentAt = null;
+  log(`${sessionLabel(session)} 上下文压缩完成${reason}`);
+  if (session.id === selectedId) refreshSelectedPlan();
+}
+
 function parseContextPercent(preview: string): number | null {
   const tail = stripAnsi(preview).split(/\n/).slice(-18).join("\n");
   const patterns = [
@@ -378,12 +410,6 @@ function newId() {
 function taskTitle(text: string) {
   const line = text.split(/\n/)[0]?.trim() ?? "";
   return line.length > 48 ? `${line.slice(0, 48)}…` : line || "未命名任务";
-}
-
-function withCommit(text: string, commit: boolean) {
-  if (!commit) return text.trim();
-  if (text.includes("【完成要求】")) return text.trim();
-  return `${text.trim()}\n\n${COMMIT_NOTE}`;
 }
 
 function withJevAsk(text: string, enabled: boolean) {
@@ -604,7 +630,7 @@ function logSnake(detail: string, err = false) {
 async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskItem) {
   if (!plan.jev) return false;
   if (plan.jevRuns >= plan.jevMax) {
-    log(`${session.paneId} Jev 续跑已达 ${plan.jevMax} 次`);
+    log(`${sessionLabel(session)} Jev 续跑已达 ${plan.jevMax} 次`);
     return false;
   }
   let raw = session.preview;
@@ -612,11 +638,11 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
     const fresh = await invoke<string>("read_session_text", { id: session.id });
     if (fresh.trim()) raw = fresh;
   } catch (error) {
-    log(`${session.paneId} 读取下一步失败：${error}`, true);
+    log(`${sessionLabel(session)} 读取下一步失败：${error}`, true);
   }
   const suggestions = parseJevSuggestions(raw);
   if (suggestions.length === 0) {
-    log(`${session.paneId} 未解析到下一步建议，结束 Jev 续跑`);
+    log(`${sessionLabel(session)} 未解析到下一步建议，结束 Jev 续跑`);
     return false;
   }
   const options = suggestions.map((text, i) => ({ id: `s${i + 1}`, text }));
@@ -634,7 +660,7 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
   const started = Date.now();
   if (provider === "laya") {
     logLaya(
-      session.paneId,
+      sessionLabel(session),
       `请求 ${providerBase() || "默认地址"} · ${options.map((item) => item.id).join("/")}`,
     );
   }
@@ -647,14 +673,14 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
       options,
     });
   } catch (error) {
-    if (provider === "laya") logLaya(session.paneId, `失败 ${error}`, true);
-    else log(`${session.paneId} ${providerLabel()} 决策失败，结束续跑：${error}`, true);
+    if (provider === "laya") logLaya(sessionLabel(session), `失败 ${error}`, true);
+    else log(`${sessionLabel(session)} ${providerLabel()} 决策失败，结束续跑：${error}`, true);
     return false;
   }
   if (provider === "laya") {
     const pct = (value: number) => `${Math.round(value * 100)}%`;
     logLaya(
-      session.paneId,
+      sessionLabel(session),
       `${decision.endpoint ?? ""} · ${decision.choice} · 置信 ${pct(decision.confidence)} · 继续 ${pct(decision.continueNow)} · ${Date.now() - started}ms`,
     );
   }
@@ -666,18 +692,18 @@ async function maybeJevContinue(session: AgentSession, plan: Plan, task: TaskIte
     decision.continueNow < JEV_MIN_CONTINUE
   ) {
     log(
-      `${session.paneId} ${providerLabel()} 决定停止（${decision.choice}，置信 ${pct(decision.confidence)}，继续 ${pct(decision.continueNow)}）`,
+      `${sessionLabel(session)} ${providerLabel()} 决定停止（${decision.choice}，置信 ${pct(decision.confidence)}，继续 ${pct(decision.continueNow)}）`,
     );
     return false;
   }
   try {
     await sendNow(session, plan, continuationPrompt(picked.text), false);
   } catch (error) {
-    log(`${session.paneId} Jev 续跑发送失败：${error}`, true);
+    log(`${sessionLabel(session)} Jev 续跑发送失败：${error}`, true);
     return false;
   }
   plan.jevRuns += 1;
-  log(`${session.paneId} ${providerLabel()} 续跑 ${plan.jevRuns}/${plan.jevMax}：${picked.text}`);
+  log(`${sessionLabel(session)} ${providerLabel()} 续跑 ${plan.jevRuns}/${plan.jevMax}：${picked.text}`);
   if (session.id === selectedId) refreshSelectedPlan();
   return true;
 }
@@ -766,7 +792,7 @@ function renderLoopStatus() {
   const bound = $("plan-bound");
   if (bound) {
     const session = selected();
-    bound.textContent = session ? session.paneId : "未绑定";
+    bound.textContent = session ? sessionLabel(session) : "未绑定";
   }
   if (!plan) {
     $("loop-bar-fill").style.width = "0%";
@@ -848,7 +874,7 @@ function listSig() {
     sessions
       .map((s) => {
         const plan = plans.get(s.id);
-        return `${s.id}:${s.idle}:${s.agentState}:${plan?.planRunning ? 1 : 0}:${plan?.tasks.length ?? 0}`;
+        return `${s.id}:${s.title}:${s.idle}:${s.agentState}:${plan?.planRunning ? 1 : 0}:${plan?.tasks.length ?? 0}`;
       })
       .join(";")
   );
@@ -904,7 +930,7 @@ function renderList(force = false) {
         : "";
       return `<button type="button" class="session${active}" data-id="${escapeHtml(s.id)}">
         <div class="row">
-          <span class="host">${escapeHtml(s.paneId)}</span>
+          <span class="host">${escapeHtml(sessionLabel(s))}</span>
           <span class="pill ${st.cls}"><span class="pill-dot"></span>${st.text}</span>
         </div>
         <div class="cwd">${escapeHtml(shortPath(s.cwd))}${planHint ? ` · ${planHint}` : ""}</div>
@@ -961,31 +987,69 @@ function renderQueue(force = false) {
               ? "提交中"
               : "等待";
       const locked = running && item.status !== "pending";
-      return `<li class="task ${item.status}">
+      const editing = item.id === editingTaskId && item.status === "pending";
+      const body = editing
+        ? `<div class="task-edit">
+            <textarea data-edit="${item.id}">${escapeHtml(editingDraft)}</textarea>
+            <div class="task-ops">
+              <button type="button" data-act="save" data-id="${item.id}" class="primary">保存</button>
+              <button type="button" data-act="cancel" data-id="${item.id}">取消</button>
+            </div>
+          </div>`
+        : `<div>
+            <div class="title${item.status === "pending" ? " can-edit" : ""}" data-act="edit" data-id="${item.id}">${escapeHtml(item.title)}</div>
+            <div class="meta">${stage}${item.commit ? " · 提交" : ""}</div>
+          </div>
+          <div class="task-ops">
+            <button type="button" data-act="edit" data-id="${item.id}" ${item.status !== "pending" ? "disabled" : ""}>编辑</button>
+            <button type="button" data-act="commit" data-id="${item.id}" ${locked ? "disabled" : ""}>${item.commit ? "提交" : "不提交"}</button>
+            <button type="button" data-act="remove" data-id="${item.id}" ${locked ? "disabled" : ""}>×</button>
+          </div>`;
+      return `<li class="task ${item.status}${editing ? " editing" : ""}>
         <span class="mark">${mark}</span>
-        <div>
-          <div class="title">${escapeHtml(item.title)}</div>
-          <div class="meta">${stage}${item.commit ? " · 提交" : ""}</div>
-        </div>
-        <div class="task-ops">
-          <button type="button" data-act="commit" data-id="${item.id}" ${locked ? "disabled" : ""}>${item.commit ? "提交" : "不提交"}</button>
-          <button type="button" data-act="remove" data-id="${item.id}" ${locked ? "disabled" : ""}>×</button>
-        </div>
+        ${body}
       </li>`;
     })
     .join("");
-  list.querySelectorAll("button").forEach((btn) => {
+  list.querySelectorAll<HTMLTextAreaElement>("textarea[data-edit]").forEach((area) => {
+    area.addEventListener("input", () => {
+      editingDraft = area.value;
+    });
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+  });
+  list.querySelectorAll<HTMLElement>("[data-act]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-id");
       const act = btn.getAttribute("data-act");
-      if (act === "commit") {
-        const task = plan.tasks.find((t) => t.id === id);
-        if (task && task.status === "pending") {
-          task.commit = !task.commit;
-          if (!plan.planRunning) snapshotTemplate(plan);
-        }
-      } else {
+      const task = plan.tasks.find((t) => t.id === id);
+      if (!task) return;
+      if (act === "edit") {
+        if (task.status !== "pending") return;
+        editingTaskId = task.id;
+        editingDraft = task.text;
+      } else if (act === "cancel") {
+        editingTaskId = null;
+        editingDraft = "";
+      } else if (act === "save") {
+        const text = editingDraft.trim();
+        if (!text) return;
+        task.text = text;
+        task.title = taskTitle(text);
+        if (!plan.planRunning) snapshotTemplate(plan);
+        editingTaskId = null;
+        editingDraft = "";
+      } else if (act === "commit") {
+        if (task.status !== "pending") return;
+        task.commit = !task.commit;
+        if (!plan.planRunning) snapshotTemplate(plan);
+      } else if (act === "remove") {
+        if (running && task.status !== "pending") return;
         plan.tasks = plan.tasks.filter((t) => t.id !== id);
+        if (editingTaskId === id) {
+          editingTaskId = null;
+          editingDraft = "";
+        }
         if (!plan.planRunning) snapshotTemplate(plan);
       }
       lastQueueSig = "";
@@ -995,41 +1059,63 @@ function renderQueue(force = false) {
   renderLoopStatus();
 }
 
-function clampScreen(value: number, fallback: number, min: number, max: number) {
-  if (!Number.isFinite(value) || value <= 0) return fallback;
-  return Math.max(min, Math.min(max, Math.round(value)));
+function addPlanTask(text: string) {
+  const body = text.trim();
+  const session = selected();
+  const plan = activePlan();
+  if (!body || !session || !plan) {
+    if (!session) log("请先选择一个会话", true);
+    return;
+  }
+  syncPlanInputsFromUi();
+  plan.tasks.push(makeTask(body, plan.commitAfter));
+  if (!plan.planRunning) snapshotTemplate(plan);
+  lastQueueSig = "";
+  renderQueue(true);
+  log(`已加入 ${sessionLabel(session)} 的计划：${taskTitle(body)}`);
 }
 
-function scaleTerm() {
-  if (!term) return;
-  const host = $("term-host");
-  const screen = host.querySelector(".xterm") as HTMLElement | null;
-  if (!screen || host.classList.contains("hidden")) return;
-  screen.style.transform = "none";
-  const naturalW = screen.offsetWidth;
-  const naturalH = screen.offsetHeight;
-  const availW = host.clientWidth - 16;
-  const availH = host.clientHeight - 16;
-  if (naturalW < 8 || naturalH < 8 || availW < 8 || availH < 8) return;
-  const scale = Math.min(availW / naturalW, availH / naturalH);
-  if (scale > 0.97 && scale < 1.03) return;
-  const current = term.options.fontSize || 14;
-  const next = Math.max(5, Math.round(current * scale));
-  if (next === current) return;
-  term.options.fontSize = next;
+const termFit = new FitAddon();
+let termLive = false;
+let termEpoch = 0;
+let termAttachId = "";
+let termGeneration = 0;
+let termPainted = false;
+let termFullCount = 0;
+let termBuffering = false;
+let termHoldResize = false;
+let termRevealTimer: number | null = null;
+let termWantCols = 0;
+let termWantRows = 0;
+type TermFrame = { generation: number; full: boolean; width: number; height: number; bytes: string };
+const termQueue: TermFrame[] = [];
+const TERM_FONT = '"SF Mono", Menlo, "PingFang SC", "Hiragino Sans GB", ui-monospace, monospace';
+
+function b64ToBytes(payload: string): Uint8Array {
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function textToB64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
 
 function ensureTerm() {
   if (term) return term;
   term = new Terminal({
     convertEol: false,
-    disableStdin: true,
-    fontFamily: '"SF Mono", Menlo, ui-monospace, monospace',
-    fontSize: 14,
-    lineHeight: 1,
-    cursorBlink: false,
-    cursorInactiveStyle: "none",
-    scrollback: 0,
+    disableStdin: false,
+    fontFamily: TERM_FONT,
+    rescaleOverlappingGlyphs: true,
+    fontSize: 13,
+    lineHeight: 1.15,
+    cursorBlink: true,
+    scrollback: 5000,
     theme: {
       background: "#0a0c10",
       foreground: "#d5dbe4",
@@ -1052,48 +1138,185 @@ function ensureTerm() {
       brightWhite: "#e7ebf2",
     },
   });
-  term.open($("term-host"));
+  term.loadAddon(termFit);
   const host = $("term-host");
-  const observer = new ResizeObserver(() => scaleTerm());
+  term.open(host);
+  term.onData((data) => {
+    if (!termLive) return;
+    void invoke("term_input", { bytesB64: textToB64(data) });
+  });
+  host.addEventListener("wheel", onTermWheel, { capture: true, passive: false });
+  const observer = new ResizeObserver(() => {
+    if (termLive) void resizeLiveTerm();
+  });
   observer.observe(host);
-  term.onRender(() => scaleTerm());
   return term;
 }
 
-function writeTerm(ansi: string, cols: number, rows: number) {
+function wheelLines(event: WheelEvent): number {
+  const sign = Math.sign(event.deltaY);
+  const amount = Math.abs(event.deltaY);
+  if (sign === 0 || amount === 0) return 0;
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return sign * Math.min(3, Math.max(1, Math.round(amount)));
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return sign * 3;
+  return sign * Math.min(3, Math.max(1, Math.round(amount / 48)));
+}
+
+function onTermWheel(event: WheelEvent) {
+  if (!termLive || !term) return;
+  const lines = wheelLines(event);
+  if (lines === 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void invoke("term_scroll", {
+    direction: lines < 0 ? "up" : "down",
+    lines: Math.abs(lines),
+  }).catch(() => undefined);
+}
+
+function showLiveHost() {
   const host = $("term-host");
+  host.classList.add("live");
   host.classList.remove("hidden");
-  $("preview").classList.add("hidden");
+}
+
+function frameMatches(frame: TermFrame) {
+  return frame.full && frame.width === termWantCols && frame.height === termWantRows && frame.width > 0;
+}
+
+function showTermReady() {
+  if (termRevealTimer != null) {
+    window.clearTimeout(termRevealTimer);
+    termRevealTimer = null;
+  }
+  if (!termLive || !termPainted) return;
+  termHoldResize = false;
+  $("term-host").classList.add("ready");
+}
+
+function paintTermFrame(frame: TermFrame) {
+  if (!term) return;
+  if (!termPainted && !frameMatches(frame)) return;
+  if (term.cols !== frame.width || term.rows !== frame.height) term.resize(frame.width, frame.height);
+  const first = !termPainted;
+  termPainted = true;
+  if (frame.full && frameMatches(frame)) termFullCount += 1;
+  const revealAfterWrite = termFullCount >= 2;
+  if (first && termRevealTimer == null) termRevealTimer = window.setTimeout(showTermReady, 450);
+  term.write(b64ToBytes(frame.bytes), () => {
+    term?.scrollToBottom();
+    if (revealAfterWrite) showTermReady();
+  });
+}
+
+async function waitForTermLayout() {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function stableTermSize(epoch: number) {
+  if (!term) return false;
+  let last = "";
+  for (let i = 0; i < 12; i++) {
+    if (epoch !== termEpoch) return false;
+    await waitForTermLayout();
+    const proposed = termFit.proposeDimensions();
+    if (!proposed || proposed.cols < 2 || proposed.rows < 2) continue;
+    term.resize(proposed.cols, proposed.rows);
+    const sig = `${term.cols}x${term.rows}`;
+    if (sig === last) {
+      termWantCols = term.cols;
+      termWantRows = term.rows;
+      return true;
+    }
+    last = sig;
+  }
+  termWantCols = term.cols;
+  termWantRows = term.rows;
+  return termWantCols > 0;
+}
+
+let termResizeTimer: number | null = null;
+function resizeLiveTerm() {
+  if (!termLive || !term || termHoldResize) return;
+  if (termResizeTimer != null) window.clearTimeout(termResizeTimer);
+  termResizeTimer = window.setTimeout(() => {
+    termResizeTimer = null;
+    if (!termLive || !term) return;
+    termFit.fit();
+    void invoke("term_resize", { cols: term.cols, rows: term.rows }).catch(() => undefined);
+  }, 80);
+}
+
+async function startLiveTerm(session: AgentSession) {
+  const epoch = ++termEpoch;
   const t = ensureTerm();
-  const nextCols = clampScreen(cols, 80, 20, 400);
-  const nextRows = clampScreen(rows, 24, 8, 200);
-  const sizeChanged = nextCols !== lastTermCols || nextRows !== lastTermRows;
-  if (sizeChanged) {
-    t.resize(nextCols, nextRows);
-    lastTermCols = nextCols;
-    lastTermRows = nextRows;
+  termLive = false;
+  termBuffering = true;
+  termGeneration = 0;
+  termPainted = false;
+  termFullCount = 0;
+  termQueue.length = 0;
+  termHoldResize = true;
+  if (termRevealTimer != null) {
+    window.clearTimeout(termRevealTimer);
+    termRevealTimer = null;
   }
-  if (ansi !== lastTermText || sizeChanged) {
-    lastTermText = ansi;
-    const payload = ansi.replace(/\n/g, "\r\n");
-    t.write(`\x1b[0m\x1b[H\x1b[2J\x1b[3J${payload}`);
+  $("term-host").classList.remove("ready");
+  showLiveHost();
+  t.reset();
+  if (!(await stableTermSize(epoch))) return;
+  try {
+    const generation = await invoke<number>("term_attach", {
+      paneId: session.paneId,
+      cols: termWantCols,
+      rows: termWantRows,
+    });
+    if (epoch !== termEpoch) return;
+    termGeneration = generation;
+    termBuffering = false;
+    const queued = termQueue.splice(0).filter((frame) => frame.generation === generation);
+    const firstFit = queued.findIndex((frame) => frameMatches(frame));
+    termLive = true;
+    for (const frame of firstFit >= 0 ? queued.slice(firstFit) : []) paintTermFrame(frame);
+    t.focus();
+  } catch (error) {
+    if (epoch !== termEpoch) return;
+    termLive = false;
+    termBuffering = false;
+    log(`终端接入失败：${error}`, true);
   }
-  requestAnimationFrame(scaleTerm);
+}
+
+function stopLiveTerm() {
+  if (!termLive && !termAttachId) return;
+  termEpoch += 1;
+  termLive = false;
+  termBuffering = false;
+  termGeneration = 0;
+  termPainted = false;
+  termFullCount = 0;
+  termQueue.length = 0;
+  termHoldResize = false;
+  if (termRevealTimer != null) {
+    window.clearTimeout(termRevealTimer);
+    termRevealTimer = null;
+  }
+  termAttachId = "";
+  $("term-host").classList.remove("live", "ready");
+  void invoke("term_detach").catch(() => undefined);
 }
 
 function hideTerm() {
   $("term-host").classList.add("hidden");
-  lastTermText = "";
 }
 
 type Cell = { x: number; y: number };
 type SnakeDriver = "manual" | "jev" | "laya";
-type SnakeLevel = "easy" | "normal" | "hard";
 const SNAKE_GRID = 15;
 const SNAKE_CELL = 16;
-const SNAKE_SPEED: Record<SnakeLevel, number> = { easy: 240, normal: 150, hard: 85 };
-const SNAKE_LEVEL_KEY = "pi-auto-snake-level";
+const SNAKE_SPEED = 180;
 const SNAKE_DRIVER_KEY = "pi-auto-snake-driver";
+const DINO_DRIVER_KEY = "pi-auto-dino-driver";
 let snakeTimer: number | null = null;
 let snakeProbe: number | null = null;
 let snakeBody: Cell[] = [];
@@ -1110,14 +1333,55 @@ let gameBackends = { jev: false, laya: false };
 let gameLayaBase = "http://127.0.0.1:8100";
 let snakeSteerNote = "";
 
-function snakeLevel(): SnakeLevel {
-  const value = $<HTMLSelectElement>("idle-difficulty").value;
-  return value === "easy" || value === "hard" ? value : "normal";
+function storedDriver(game: IdleGameKind): SnakeDriver {
+  const value = localStorage.getItem(game === "dino" ? DINO_DRIVER_KEY : SNAKE_DRIVER_KEY);
+  if (game === "dino") return value === "laya" ? "laya" : "manual";
+  return value === "jev" || value === "laya" ? value : "manual";
 }
 
 function snakeDriver(): SnakeDriver {
   const value = $<HTMLSelectElement>("idle-driver").value;
+  if (idleGame() === "dino") return value === "laya" ? "laya" : "manual";
   return value === "jev" || value === "laya" ? value : "manual";
+}
+
+type IdleGameKind = "snake" | "dino";
+const IDLE_GAME_KEY = "pi-auto-idle-game";
+
+function idleGame(): IdleGameKind {
+  const value = $<HTMLSelectElement>("idle-game-kind").value;
+  return value === "dino" ? "dino" : "snake";
+}
+
+function dinoUsesLaya() {
+  return idleGame() === "dino" && snakeDriver() === "laya";
+}
+
+function syncDriverOptions() {
+  const snake = idleGame() === "snake";
+  const jevOpt = $<HTMLOptionElement>("idle-driver-jev");
+  const layaOpt = $<HTMLOptionElement>("idle-driver-laya");
+  jevOpt.hidden = !snake;
+  jevOpt.disabled = !snake || !gameBackends.jev;
+  layaOpt.disabled = !gameBackends.laya;
+  jevOpt.textContent = gameBackends.jev ? "Jev" : "Jev 未接入";
+  layaOpt.textContent = gameBackends.laya ? "Laya" : "Laya 未接入";
+}
+
+function loadDriverSelect(game: IdleGameKind = idleGame()) {
+  const select = $<HTMLSelectElement>("idle-driver");
+  const driver = storedDriver(game);
+  syncDriverOptions();
+  if (select.value !== driver) select.value = driver;
+}
+
+function syncSnakeControls() {
+  const snake = idleGame() === "snake";
+  $("idle-game").classList.toggle("hidden", !snake);
+  $("idle-dino").classList.toggle("hidden", snake);
+  $("idle-snake-log").classList.toggle("hidden", !snake);
+  $("idle-dino-log").classList.toggle("hidden", snake);
+  syncDriverOptions();
 }
 
 function placeSnakeFood() {
@@ -1172,24 +1436,35 @@ function drawSnake() {
     : driving
       ? `${driver === "laya" ? "Laya" : "Jev"} 控制 · 收到决策才移动`
       : "方向键移动 · 选会话后停止";
+  syncSnakeControls();
   syncStartButton();
 }
 
 function waitingToStart() {
+  if (idleGame() === "dino") return !dinoRunning || dinoOver;
   return !snakeRunning || snakeOver;
 }
 
 function syncStartButton() {
   const button = $<HTMLButtonElement>("idle-start");
-  const driver = snakeDriver();
   button.classList.toggle("hidden", !waitingToStart());
+  if (idleGame() === "dino") {
+    button.disabled = dinoUsesLaya() && !gameBackends.laya;
+    return;
+  }
+  const driver = snakeDriver();
   button.disabled = (driver === "jev" && !gameBackends.jev) || (driver === "laya" && !gameBackends.laya);
 }
 
 function beginGame() {
+  if (idleGame() === "dino") {
+    beginDino();
+    return;
+  }
   const driver = snakeDriver();
   if (driver === "jev" && !gameBackends.jev) return;
   if (driver === "laya" && !gameBackends.laya) return;
+  stopDino();
   snakeRunning = true;
   resetSnake();
   startControlLoop();
@@ -1430,14 +1705,10 @@ async function refreshGameBackends() {
   } catch {
     gameBackends = { jev: localJev, laya: false };
   }
-  const jevOpt = $<HTMLOptionElement>("idle-driver-jev");
-  const layaOpt = $<HTMLOptionElement>("idle-driver-laya");
-  jevOpt.disabled = !gameBackends.jev;
-  layaOpt.disabled = !gameBackends.laya;
-  jevOpt.textContent = gameBackends.jev ? "Jev" : "Jev 未接入";
-  layaOpt.textContent = gameBackends.laya ? "Laya" : "Laya 未接入";
-  drawSnake();
-  if (!$("preview-empty").classList.contains("hidden") && snakeDriver() !== "manual" && snakeTimer != null) {
+  syncDriverOptions();
+  if (idleGame() === "snake") drawSnake();
+  else drawDino();
+  if (!$("preview-empty").classList.contains("hidden") && idleGame() === "snake" && snakeDriver() !== "manual" && snakeTimer != null) {
     startControlLoop();
   }
 }
@@ -1459,7 +1730,7 @@ function startControlLoop() {
   }
   if (snakeDriver() === "manual") {
     snakeSteerNote = "";
-    snakeTimer = window.setInterval(stepSnake, SNAKE_SPEED[snakeLevel()]);
+    snakeTimer = window.setInterval(stepSnake, SNAKE_SPEED);
     drawSnake();
     return;
   }
@@ -1468,11 +1739,445 @@ function startControlLoop() {
   queueAiTurn();
 }
 
+const DINO_W = 480;
+const DINO_H = 150;
+const DINO_GROUND = 118;
+const DINO_BEST_KEY = "pi-auto-dino-best";
+type DinoObstacle = { x: number; w: number; h: number; y: number; bird: boolean };
+let dinoRaf: number | null = null;
+let dinoRunning = false;
+let dinoOver = false;
+let dinoScore = 0;
+let dinoBest = Number(localStorage.getItem(DINO_BEST_KEY) || 0) || 0;
+let dinoY = 0;
+let dinoVy = 0;
+let dinoDuck = false;
+let dinoSpeed = 2.4;
+let dinoObstacles: DinoObstacle[] = [];
+let dinoGap = 220;
+let dinoLeg = 0;
+let dinoLast = 0;
+let dinoEpoch = 0;
+let dinoSteerNote = "";
+let dinoAsking = false;
+const DINO_ASK = "恐龙正在实时跑动，不会停。请综合跳跃高度、地面柱子和头顶上挡，选择现在不会撞上的动作。跳能越过柱子，但可能撞上挡；蹲能躲开低处上挡，但过不了柱子；跑保持当前姿态。多个都能过时，优先跑，其次蹲，最后跳。";
+type DinoAction = "run" | "jump" | "duck";
+
+function logDino(detail: string) {
+  const box = $("idle-dino-log-list");
+  const item = document.createElement("div");
+  item.className = "idle-log-item";
+  const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  item.innerHTML = `<span class="time">${time}</span>${escapeHtml(detail)}`;
+  box.prepend(item);
+  while (box.childElementCount > 40) box.removeChild(box.lastElementChild as Node);
+}
+
+function dinoBox() {
+  if (dinoDuck && dinoY < 2) return { x: 24, y: DINO_GROUND - 16, w: 38, h: 14 };
+  return { x: 28, y: DINO_GROUND - 34 - dinoY, w: 20, h: 32 };
+}
+
+function resetDino() {
+  dinoRunning = false;
+  dinoOver = false;
+  dinoScore = 0;
+  dinoY = 0;
+  dinoVy = 0;
+  dinoDuck = false;
+  dinoSpeed = 2.4;
+  dinoObstacles = [];
+  dinoGap = 260;
+  dinoLeg = 0;
+  if (dinoRaf != null) {
+    cancelAnimationFrame(dinoRaf);
+    dinoRaf = null;
+  }
+  $("idle-dino-best").textContent = String(dinoBest);
+  drawDino();
+}
+
+function stopDino() {
+  dinoEpoch += 1;
+  dinoRunning = false;
+  dinoDuck = false;
+  dinoAsking = false;
+  dinoSteerNote = "";
+  if (dinoRaf != null) {
+    cancelAnimationFrame(dinoRaf);
+    dinoRaf = null;
+  }
+}
+
+function rememberDinoScore() {
+  const score = Math.floor(dinoScore);
+  if (score > dinoBest) {
+    dinoBest = score;
+    localStorage.setItem(DINO_BEST_KEY, String(dinoBest));
+    logDino(`新纪录 ${dinoBest}`);
+  } else if (score > 0) {
+    logDino(`本局 ${score} · 最高 ${dinoBest}`);
+  }
+  $("idle-dino-best").textContent = String(dinoBest);
+}
+
+function spawnDinoObstacle() {
+  const bird = dinoScore > 280 && Math.random() < 0.16;
+  if (bird) {
+    const low = Math.random() < 0.7;
+    dinoObstacles.push({ x: DINO_W + 20, w: 26, h: 10, y: low ? DINO_GROUND - 22 : DINO_GROUND - 46, bird: true });
+    return;
+  }
+  const h = Math.random() < 0.75 ? 20 : 32;
+  dinoObstacles.push({ x: DINO_W + 20, w: 12, h, y: DINO_GROUND - h, bird: false });
+}
+
+function dinoHits(obstacle: DinoObstacle) {
+  const box = dinoBox();
+  return box.x < obstacle.x + obstacle.w - 6 && box.x + box.w > obstacle.x + 6 && box.y < obstacle.y + obstacle.h - 6 && box.y + box.h > obstacle.y + 6;
+}
+
+function drawDinoGround(ctx: CanvasRenderingContext2D) {
+  const scroll = Math.floor(dinoScore * 14);
+  ctx.strokeStyle = "#2a303a";
+  ctx.beginPath();
+  ctx.moveTo(0, DINO_GROUND + 1);
+  ctx.lineTo(DINO_W, DINO_GROUND + 1);
+  ctx.stroke();
+  ctx.fillStyle = "#1c2129";
+  for (let i = 0; i < 18; i += 1) {
+    const x = ((i * 28 - (scroll % 28)) + 28) % (DINO_W + 28) - 8;
+    ctx.fillRect(x, DINO_GROUND + 5, 10, 1);
+  }
+}
+
+function drawDinoTree(ctx: CanvasRenderingContext2D, obstacle: DinoObstacle) {
+  const x = obstacle.x;
+  const y = obstacle.y;
+  const w = obstacle.w;
+  const h = obstacle.h;
+  const trunkW = 4;
+  const trunkX = x + Math.floor((w - trunkW) / 2);
+  ctx.fillStyle = "#6d7582";
+  ctx.fillRect(trunkX, y + 8, trunkW, h - 8);
+  ctx.fillStyle = "#86a892";
+  const crownH = Math.min(12, Math.max(7, h - 12));
+  ctx.fillRect(x, y, w, crownH);
+  ctx.fillRect(x + 1, y + 3, w - 2, crownH - 2);
+  ctx.fillStyle = "#a4c2ad";
+  ctx.fillRect(x + 2, y + 2, Math.max(2, w - 8), 3);
+}
+
+function drawDinoBird(ctx: CanvasRenderingContext2D, obstacle: DinoObstacle) {
+  const x = obstacle.x;
+  const y = obstacle.y;
+  const flap = Math.floor(dinoLeg + obstacle.x / 12) % 2 === 0;
+  ctx.fillStyle = "#8aa4c2";
+  ctx.fillRect(x + 6, y + 3, 14, 5);
+  ctx.fillRect(x + 16, y + 4, 6, 2);
+  ctx.fillStyle = "#a9bdd4";
+  if (flap) {
+    ctx.fillRect(x, y, 10, 3);
+    ctx.fillRect(x + 14, y, 10, 3);
+  } else {
+    ctx.fillRect(x + 1, y + 6, 9, 3);
+    ctx.fillRect(x + 15, y + 6, 9, 3);
+  }
+  ctx.fillStyle = "#0a0c10";
+  ctx.fillRect(x + 17, y + 4, 1, 1);
+}
+
+function drawDinoRunner(ctx: CanvasRenderingContext2D) {
+  const box = dinoBox();
+  const ducking = dinoDuck && dinoY < 2;
+  const step = Math.floor(dinoLeg) % 2 === 0;
+  ctx.fillStyle = "#e7ebf2";
+  if (ducking) {
+    ctx.fillRect(box.x + 2, box.y + 4, 22, 7);
+    ctx.fillRect(box.x + 20, box.y + 2, 12, 6);
+    ctx.fillRect(box.x + 31, box.y + 4, 5, 2);
+    ctx.fillStyle = "#0a0c10";
+    ctx.fillRect(box.x + 26, box.y + 4, 2, 2);
+    ctx.fillStyle = "#8b93a1";
+    ctx.fillRect(box.x + (step ? 8 : 16), box.y + 11, 6, 2);
+    return;
+  }
+  ctx.fillRect(box.x - 7, box.y + 12, 8, 3);
+  ctx.fillRect(box.x, box.y + 10, 14, 10);
+  ctx.fillRect(box.x + 10, box.y + 4, 5, 8);
+  ctx.fillRect(box.x + 12, box.y, 8, 7);
+  ctx.fillRect(box.x + 18, box.y + 2, 2, 3);
+  ctx.fillStyle = "#0a0c10";
+  ctx.fillRect(box.x + 16, box.y + 2, 2, 2);
+  ctx.fillStyle = "#e7ebf2";
+  ctx.fillRect(box.x + (step ? 2 : 8), box.y + 20, 3, 10);
+  ctx.fillRect(box.x + (step ? 9 : 3), box.y + 20, 3, 10);
+}
+
+function drawDino() {
+  const canvas = $<HTMLCanvasElement>("idle-dino");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== DINO_W * dpr) {
+    canvas.width = DINO_W * dpr;
+    canvas.height = DINO_H * dpr;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0a0c10";
+  ctx.fillRect(0, 0, DINO_W, DINO_H);
+  drawDinoGround(ctx);
+  for (const obstacle of dinoObstacles) {
+    if (obstacle.bird) drawDinoBird(ctx, obstacle);
+    else drawDinoTree(ctx, obstacle);
+  }
+  drawDinoRunner(ctx);
+  const shown = Math.floor(dinoScore);
+  $("idle-game-score").textContent = dinoOver ? `${shown} · 最高 ${dinoBest}` : String(shown);
+  $("idle-game-hint").textContent = dinoSteerNote
+    ? dinoSteerNote
+    : dinoRunning && !dinoOver
+      ? dinoUsesLaya()
+        ? snakeAiBusy
+          ? "Laya 决策中"
+          : "Laya 控制 · 按实时状态决策"
+        : "空格 / ↑ 跳 · ↓ 蹲"
+      : `最高 ${dinoBest} · 空格开始`;
+  syncSnakeControls();
+  syncStartButton();
+}
+
+function dinoDist(obstacle: DinoObstacle) {
+  return obstacle.x - (dinoBox().x + dinoBox().w);
+}
+
+function poseAt(y: number, duck: boolean) {
+  if (duck && y < 2) return { x: 24, y: DINO_GROUND - 16, w: 38, h: 14 };
+  return { x: 28, y: DINO_GROUND - 34 - y, w: 20, h: 32 };
+}
+
+function band(obstacle: DinoObstacle) {
+  const bottom = Math.round(DINO_GROUND - (obstacle.y + obstacle.h));
+  const top = Math.round(DINO_GROUND - obstacle.y);
+  return { bottom, top };
+}
+
+function obstacleName(obstacle: DinoObstacle) {
+  if (!obstacle.bird) return "柱子";
+  return obstacle.y >= DINO_GROUND - 30 ? "低处上挡" : "高处上挡";
+}
+
+function foresee(action: DinoAction) {
+  let y = dinoY;
+  let vy = dinoVy;
+  let duck = action === "duck" ? y < 2 : action === "run" && y < 2 ? false : dinoDuck && action !== "jump";
+  if (action === "jump" && y < 2) {
+    vy = -7.4;
+    duck = false;
+  }
+  const obstacles = dinoObstacles.map((item) => ({ ...item }));
+  for (let frame = 0; frame < 100; frame += 1) {
+    vy += duck && y < 2 ? 0.62 : 0.34;
+    y = Math.max(0, y - vy);
+    if (y === 0) vy = 0;
+    const box = poseAt(y, duck);
+    for (const obstacle of obstacles) {
+      obstacle.x -= dinoSpeed;
+      if (box.x < obstacle.x + obstacle.w - 6 && box.x + box.w > obstacle.x + 6 && box.y < obstacle.y + obstacle.h - 6 && box.y + box.h > obstacle.y + 6) {
+        return { ok: false, hit: `${obstacleName(obstacle)}，约 ${Math.round(dinoDist(obstacle))} 像素外` };
+      }
+    }
+    if (obstacles.every((item) => item.x + item.w < box.x)) return { ok: true, hit: "" };
+  }
+  return { ok: true, hit: "" };
+}
+
+function dinoScene() {
+  const jumpPeak = Math.round((7.4 * 7.4) / (2 * 0.34));
+  const ahead = dinoObstacles
+    .filter((item) => dinoDist(item) > -8)
+    .sort((a, b) => a.x - b.x)
+    .slice(0, 3);
+  const lines = ahead.map((item, index) => {
+    const span = band(item);
+    return `${index + 1}. ${obstacleName(item)}，距离 ${Math.round(dinoDist(item))}，占据离地 ${span.bottom}-${span.top}，宽 ${item.w}`;
+  });
+  return [
+    `跳跃：在地面起跳，初速度 7.4，最高约离地 ${jumpPeak}。当前离地 ${Math.round(dinoY)}，竖直速度 ${dinoVy.toFixed(1)}（负为上升）。${dinoY < 2 ? "现在可以跳或蹲。" : "已在空中，不能再跳，也不能蹲。"}`,
+    ahead.length ? `前方障碍，从近到远：\n${lines.join("\n")}` : "前方没有障碍。",
+    "柱子从地面长上来，要用跳越过。上挡在空中，低处上挡要蹲，高处上挡不要跳进去。",
+  ].join("\n");
+}
+
+function dinoChoices() {
+  const actions: DinoAction[] = ["run", "jump", "duck"];
+  const label: Record<DinoAction, string> = { run: "继续跑", jump: "现在起跳", duck: "现在蹲下" };
+  return actions.map((id) => {
+    const outcome = foresee(id);
+    return {
+      id,
+      text: `${label[id]}。按当前速度和跳跃轨迹推演：${outcome.ok ? "能过前方柱子和上挡" : `会撞上${outcome.hit}`}`,
+    };
+  });
+}
+
+function applyDinoAction(id: DinoAction) {
+  if (id === "jump") {
+    if (dinoY >= 2) return;
+    dinoDuck = false;
+    dinoVy = -7.4;
+    return;
+  }
+  if (dinoY < 2) dinoDuck = id === "duck";
+}
+
+function releaseDinoDuck() {
+  if (!dinoDuck || !dinoUsesLaya()) return;
+  const box = dinoBox();
+  const blocking = dinoObstacles.some((item) => item.bird && item.y >= DINO_GROUND - 30 && item.x + item.w > box.x - 8);
+  if (!blocking) dinoDuck = false;
+}
+
+function liveChoiceFits(id: DinoAction) {
+  return foresee(id).ok;
+}
+
+function continueDinoAsk(epoch: number) {
+  dinoAsking = false;
+  if (epoch !== dinoEpoch || !dinoRunning || dinoOver || !dinoUsesLaya()) return;
+  queueDinoTurn();
+}
+
+async function dinoTurn(epoch: number) {
+  if (epoch !== dinoEpoch || !dinoRunning || dinoOver || !dinoUsesLaya()) {
+    dinoAsking = false;
+    return;
+  }
+  if (snakeAiBusy) {
+    window.setTimeout(() => void dinoTurn(epoch), 200);
+    return;
+  }
+  const options = dinoChoices();
+  snakeAiBusy = true;
+  dinoSteerNote = "Laya 决策中";
+  const started = Date.now();
+  logDino(`问 · ${options.map((item) => `${item.id}${foresee(item.id).ok ? "可过" : "会撞"}`).join(" ")}`);
+  try {
+    const decision = await invoke<JevDecision>("jev_choose", {
+      provider: "laya",
+      apiKey: localStorage.getItem(keyStorage("laya"))?.trim() || null,
+      baseUrl: providerBase("laya"),
+      state: [
+        "恐龙正在实时跑动，不会停下来等你。综合跳跃、柱子和上挡再选。",
+        `分数 ${Math.floor(dinoScore)}。水平速度 ${dinoSpeed.toFixed(1)}。`,
+        dinoScene(),
+      ].join("\n"),
+      options: options.map((item) => ({ id: item.id, text: item.text })),
+      instructions: DINO_ASK,
+      includeStop: false,
+    });
+    if (epoch !== dinoEpoch || dinoOver || idleGame() !== "dino") return;
+    const picked = options.find((item) => item.id === decision.choice) ?? options.find((item) => liveChoiceFits(item.id)) ?? options[0];
+    if (!liveChoiceFits(picked.id)) {
+      logDino(`${picked.id} 返回时已不适用，不执行`);
+    } else {
+      logDino(`${decision.endpoint ?? gameLayaBase} · ${picked.id} · 置信 ${Math.round(decision.confidence * 100)}% · ${Date.now() - started}ms`);
+      applyDinoAction(picked.id);
+    }
+    dinoSteerNote = "";
+  } catch (error) {
+    if (epoch !== dinoEpoch) return;
+    dinoSteerNote = "Laya 决策失败，正在重试";
+    logDino(`失败 ${error}`);
+    window.setTimeout(() => void dinoTurn(epoch), 600);
+    return;
+  } finally {
+    snakeAiBusy = false;
+  }
+  continueDinoAsk(epoch);
+}
+
+function queueDinoTurn() {
+  if (!dinoRunning || dinoOver || !dinoUsesLaya() || snakeAiBusy || dinoAsking) return;
+  dinoAsking = true;
+  const epoch = dinoEpoch;
+  window.setTimeout(() => void dinoTurn(epoch), 30);
+}
+
+function stepDino(now: number) {
+  if (!dinoRunning || dinoOver || idleGame() !== "dino") return;
+  dinoRaf = null;
+  releaseDinoDuck();
+  const dt = Math.min(32, dinoLast ? now - dinoLast : 16) / 16;
+  dinoLast = now;
+  dinoSpeed = Math.min(4.6, 2.4 + dinoScore * 0.0016);
+  dinoVy += (dinoDuck ? 0.62 : 0.34) * dt;
+  dinoY = Math.max(0, dinoY - dinoVy * dt);
+  if (dinoY === 0) dinoVy = 0;
+  dinoScore += dinoSpeed * dt * 0.08;
+  dinoLeg += dt;
+  dinoGap -= dinoSpeed * dt;
+  if (dinoGap <= 0) {
+    spawnDinoObstacle();
+    dinoGap = 240 + Math.random() * 140;
+  }
+  for (const obstacle of dinoObstacles) obstacle.x -= dinoSpeed * dt;
+  dinoObstacles = dinoObstacles.filter((obstacle) => obstacle.x + obstacle.w > -8);
+  if (dinoUsesLaya()) queueDinoTurn();
+  if (dinoObstacles.some(dinoHits)) {
+    dinoOver = true;
+    dinoRunning = false;
+    rememberDinoScore();
+    drawDino();
+    return;
+  }
+  drawDino();
+  dinoRaf = requestAnimationFrame(stepDino);
+}
+
+function beginDino() {
+  if (dinoUsesLaya() && !gameBackends.laya) return;
+  resetDino();
+  dinoEpoch += 1;
+  dinoRunning = true;
+  dinoLast = 0;
+  dinoSteerNote = "";
+  dinoAsking = false;
+  drawDino();
+  dinoRaf = requestAnimationFrame(stepDino);
+  if (dinoUsesLaya()) queueDinoTurn();
+}
+
+function dinoJump() {
+  if (!dinoRunning || dinoOver || dinoY > 0 || (dinoDuck && dinoY < 2)) return;
+  dinoVy = -7.4;
+}
+
+function onDinoKey(event: KeyboardEvent) {
+  if (event.key === " " || event.key === "ArrowUp" || event.key === "w") {
+    event.preventDefault();
+    if (!dinoRunning || dinoOver) {
+      beginDino();
+      return;
+    }
+    if (!dinoUsesLaya()) dinoJump();
+    return;
+  }
+  if (event.key === "ArrowDown" || event.key === "s") {
+    event.preventDefault();
+    if (dinoRunning && !dinoOver && !dinoUsesLaya()) dinoDuck = true;
+  }
+}
+
 function showIdleGame() {
   if (snakeShown) return;
   snakeShown = true;
-  resetSnake();
-  startControlLoop();
+  syncSnakeControls();
+  if (idleGame() === "dino") resetDino();
+  else {
+    resetSnake();
+    startControlLoop();
+  }
   void refreshGameBackends();
   if (snakeProbe == null) snakeProbe = window.setInterval(() => void refreshGameBackends(), 8000);
 }
@@ -1480,6 +2185,7 @@ function showIdleGame() {
 function hideIdleGame() {
   snakeShown = false;
   snakeEpoch += 1;
+  snakeRunning = false;
   if (snakeTimer != null) {
     window.clearInterval(snakeTimer);
     snakeTimer = null;
@@ -1488,12 +2194,17 @@ function hideIdleGame() {
     window.clearInterval(snakeProbe);
     snakeProbe = null;
   }
+  stopDino();
 }
 
 function onIdleGameKey(event: KeyboardEvent) {
   if ($("preview-empty").classList.contains("hidden")) return;
   const tag = (event.target as HTMLElement | null)?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (idleGame() === "dino") {
+    onDinoKey(event);
+    return;
+  }
   const turn: Record<string, Cell> = {
     ArrowUp: { x: 0, y: -1 },
     ArrowDown: { x: 0, y: 1 },
@@ -1526,14 +2237,11 @@ function onIdleGameKey(event: KeyboardEvent) {
 
 function renderMain() {
   const session = selected();
-  const hasTarget = Boolean(session);
-  $("queue-btn").toggleAttribute("disabled", !hasTarget);
-  $("send-btn").toggleAttribute("disabled", !hasTarget);
   setAppTheme(session?.agent);
 
   const ctx = session ? parseContextPercent(session.preview) : null;
   const headSig = session
-    ? `${session.id}:${session.idle}:${session.agentState}:${session.reason}:${ctx ?? ""}`
+    ? `${session.id}:${session.title}:${session.idle}:${session.agentState}:${session.reason}:${ctx ?? ""}`
     : "none";
   const headChanged = headSig !== lastHeadSig;
   lastHeadSig = headSig;
@@ -1545,70 +2253,39 @@ function renderMain() {
   }
 
   const empty = $("preview-empty");
-  const live = $("live-badge");
-  const pre = $("preview");
-  const image = $("preview-image") as HTMLImageElement;
-  image.classList.add("hidden");
 
   if (!session) {
     $("target-kicker").textContent = "未选择";
     $("target-title").textContent = "选择一个会话";
     $("target-meta").textContent = "";
-    $("preview-hint").textContent = "";
-    live.textContent = "—";
-    live.className = "live-badge";
     empty.classList.remove("hidden");
+    stopLiveTerm();
     hideTerm();
-    if (pre.textContent) pre.textContent = "";
     showIdleGame();
     return;
   }
 
   hideIdleGame();
   empty.classList.add("hidden");
+  if (termAttachId !== session.id) {
+    termAttachId = session.id;
+    void startLiveTerm(session);
+  }
   if (headChanged) {
     $("target-kicker").textContent = session.agentLabel;
-    $("target-title").textContent = session.paneId;
+    $("target-title").textContent = sessionLabel(session);
     const ctxBit = ctx == null ? "" : ` · ${ctx.toFixed(0)}%`;
     $("status-text").textContent = activePlan()?.compacting ? "压缩中" : `${st.text}${ctxBit}`;
     $("target-meta").textContent = shortPath(session.cwd);
-    live.textContent = session.idle ? "空闲" : "执行";
-    live.className = `live-badge ${session.idle ? "on" : "busy"}`;
-    $("preview-hint").textContent = "";
   }
 
-  const nextText = session.preview.trim();
-  if (!nextText) {
-    hideTerm();
-    pre.classList.remove("hidden");
-    pre.textContent = "暂无 pane 画面";
-    return;
-  }
-  writeTerm(nextText, session.cols, session.rows);
+  showLiveHost();
 }
 
 function renderAll() {
   renderList();
   renderMain();
   renderQueue();
-}
-
-function enqueue() {
-  const text = taskInput().value.trim();
-  if (!text) return;
-  const session = selected();
-  const plan = activePlan();
-  if (!session || !plan) {
-    log("请先选择一个 Herdr pane", true);
-    return;
-  }
-  syncPlanInputsFromUi();
-  plan.tasks.push(makeTask(text, plan.commitAfter));
-  if (!plan.planRunning) snapshotTemplate(plan);
-  taskInput().value = "";
-  lastQueueSig = "";
-  renderQueue();
-  log(`已加入 ${session.paneId} 的计划：${taskTitle(text)}`);
 }
 
 function showImport(raw = "") {
@@ -1659,7 +2336,7 @@ function confirmImport() {
   if (!plan.planRunning) snapshotTemplate(plan);
   lastQueueSig = "";
   renderQueue();
-  log(`已导入 ${importDraft.length} 条到 ${session.paneId}${commit ? "（含完成后提交代码）" : ""}`);
+  log(`已导入 ${importDraft.length} 条到 ${sessionLabel(session)}${commit ? "（含完成后提交代码）" : ""}`);
   hideImport();
 }
 
@@ -1669,7 +2346,7 @@ async function sendNow(session: AgentSession, plan: Plan | null, text: string, f
     text,
     force,
   });
-  log(`${session.paneId} · ${result}`);
+  log(`${sessionLabel(session)} · ${result}`);
   if (plan) {
     plan.phase = "sent";
     plan.sentAt = Date.now();
@@ -1726,14 +2403,15 @@ function startLoop() {
   }
   plan.planRunning = true;
   plan.compacting = false;
+  plan.compactFrom = null;
   plan.needCompact = true;
   armStallWatch(session);
   lastQueueSig = "";
   if (plan.jev && jevProvider() !== "laya" && !providerKey()) {
-    log(`${session.paneId} 已开启续跑，但没有 ${providerLabel()} API Key。决策时会跳过续跑`, true);
+    log(`${sessionLabel(session)} 已开启续跑，但没有 ${providerLabel()} API Key。决策时会跳过续跑`, true);
   }
   log(
-    `${session.paneId} 开始循环：${plan.tasks.length} 条 · 循环 ${loopRounds(plan)} 次${plan.jev ? ` · ${providerLabel()} 续跑` : ""}`,
+    `${sessionLabel(session)} 开始循环：${plan.tasks.length} 条 · 循环 ${loopRounds(plan)} 次${plan.jev ? ` · ${providerLabel()} 续跑` : ""}`,
   );
   setAppTheme(session.agent);
   syncRunButtons();
@@ -1746,8 +2424,9 @@ function pauseLoop() {
   if (!plan?.planRunning) return;
   plan.planRunning = false;
   plan.compacting = false;
+  plan.compactFrom = null;
   clearStallWatch(selectedId);
-  log(`${selected()?.paneId ?? "当前窗口"} 已暂停循环`);
+  log(`${selected() ? sessionLabel(selected()!) : "当前窗口"} 已暂停循环`);
   setAppTheme(selected()?.agent);
   syncRunButtons();
   lastQueueSig = "";
@@ -1759,6 +2438,7 @@ function stopLoop() {
   if (!plan) return;
   plan.planRunning = false;
   plan.compacting = false;
+  plan.compactFrom = null;
   plan.needCompact = true;
   plan.currentRound = 1;
   plan.phase = "idle";
@@ -1767,7 +2447,7 @@ function stopLoop() {
   plan.jevRuns = 0;
   clearStallWatch(selectedId);
   for (const task of plan.tasks) task.status = "pending";
-  log(`${selected()?.paneId ?? "当前窗口"} 已停止循环，进度已清零`);
+  log(`${selected() ? sessionLabel(selected()!) : "当前窗口"} 已停止循环，进度已清零`);
   setAppTheme(selected()?.agent);
   syncRunButtons();
   lastQueueSig = "";
@@ -1778,7 +2458,7 @@ function finishPlan(session: AgentSession, plan: Plan) {
   plan.planRunning = false;
   plan.currentRound = 1;
   plan.phase = "idle";
-  log(`${session.paneId} 计划已全部完成`);
+  log(`${sessionLabel(session)} 计划已全部完成`);
   if (session.id === selectedId) {
     setAppTheme(session.agent);
     syncRunButtons();
@@ -1803,7 +2483,7 @@ function startNextRound(session: AgentSession, plan: Plan) {
   }));
   plan.phase = "idle";
   plan.idleSince = null;
-  log(`${session.paneId} 开始第 ${plan.currentRound}/${total} 次循环`);
+  log(`${sessionLabel(session)} 开始第 ${plan.currentRound}/${total} 次循环`);
   if (session.id === selectedId) renderQueue();
   return plan.tasks.length > 0;
 }
@@ -1986,7 +2666,7 @@ async function poll() {
   try {
     sessions = await invoke<AgentSession[]>("list_sessions", {
       previewId: selectedId,
-      previewIds: stallPreviewIds(),
+      previewIds: pollPreviewIds(),
     });
     if (selectedId && !sessions.some((s) => s.id === selectedId)) {
       log(`会话 ${selectedId} 已退出，计划仍保留`, true);
@@ -2039,10 +2719,10 @@ async function maybeUnstickStalled() {
         text: NUDGE_TEXT,
       });
       log(
-        `${session.paneId} 输出 5 分钟几乎无变化（差异 ${(ratio * 100).toFixed(2)}%），${result}`,
+        `${sessionLabel(session)} 输出 5 分钟几乎无变化（差异 ${(ratio * 100).toFixed(2)}%），${result}`,
       );
     } catch (error) {
-      log(`${session.paneId} 卡死唤醒失败：${error}`, true);
+      log(`${sessionLabel(session)} 卡死唤醒失败：${error}`, true);
       const watch = stallWatch.get(session.id);
       if (watch) watch.at = Date.now() - STALL_CHECK_MS + 60_000;
     } finally {
@@ -2057,21 +2737,22 @@ function completeRunning(session: AgentSession, plan: Plan, running: TaskItem) {
   plan.idleSince = Date.now();
   plan.sentAt = null;
   plan.needCompact = true;
-  log(`${session.paneId} 完成：${running.title}`);
+  log(`${sessionLabel(session)} 完成：${running.title}`);
   if (session.id === selectedId) refreshSelectedPlan();
 }
 
 async function startCommit(session: AgentSession, plan: Plan, task: TaskItem) {
   task.status = "committing";
-  log(`${session.paneId} 开始提交：${task.title}`);
+  log(`${sessionLabel(session)} 开始提交：${task.title}`);
   if (session.id === selectedId) refreshSelectedPlan();
   await sendNow(session, plan, commitPrompt(task), false);
 }
 
 async function startCompact(session: AgentSession, plan: Plan) {
   plan.compacting = true;
+  plan.compactFrom = parseContextPercent(session.preview);
   plan.needCompact = false;
-  log(`${session.paneId} 上下文 ${parseContextPercent(session.preview)?.toFixed(0) ?? "?"}% ≥ ${compactThreshold(plan)}%，先压缩`);
+  log(`${sessionLabel(session)} 上下文 ${plan.compactFrom?.toFixed(0) ?? "?"}% ≥ ${compactThreshold(plan)}%，先压缩`);
   await sendNow(session, plan, compactCommand(session.agent), false);
 }
 
@@ -2081,26 +2762,44 @@ async function tickPlan(session: AgentSession, plan: Plan) {
   const ctx = parseContextPercent(session.preview);
 
   if (plan.compacting) {
-    if (!session.idle) {
+    const elapsed = plan.sentAt ? now - plan.sentAt : 0;
+    const back = agentBack(session);
+    const evidence = compactEvidence(session, plan, ctx);
+    if (!back) {
       plan.phase = "working";
       plan.idleSince = null;
+      if (evidence.ready && elapsed >= 8000) {
+        const why = evidence.saidDone ? " · 终端已结束" : ` · 上下文 ${ctx?.toFixed(0) ?? "?"}%`;
+        finishCompact(session, plan, why);
+      }
       return;
     }
     if (plan.phase === "sent") {
-      if (plan.sentAt && now - plan.sentAt < 3000) return;
+      if (elapsed < 3000 && !evidence.ready) return;
       plan.phase = "settling";
       plan.idleSince = now;
     } else if (plan.phase === "working") {
       plan.phase = "settling";
       plan.idleSince = now;
     }
-    if (plan.phase === "settling") {
-      if (plan.idleSince && now - plan.idleSince < stableMs) return;
-      plan.compacting = false;
-      plan.phase = "idle";
-      plan.idleSince = now;
-      plan.sentAt = null;
-      log(`${session.paneId} 上下文压缩完成`);
+    const settled = plan.phase === "settling" && (!plan.idleSince || now - plan.idleSince >= stableMs);
+    if (evidence.ready && (settled || elapsed >= 3000)) {
+      const why = evidence.saidDone
+        ? " · 终端已结束"
+        : ctx != null
+          ? ` · 上下文 ${ctx.toFixed(0)}%`
+          : "";
+      finishCompact(session, plan, why);
+      return;
+    }
+    if (settled && ctx != null && ctx >= compactThreshold(plan) && !evidence.saidDone && elapsed < 45_000) return;
+    if (settled && elapsed >= 15_000) {
+      const stillHigh = ctx != null && ctx >= compactThreshold(plan);
+      finishCompact(session, plan, stillHigh ? ` · 已回到提示符，上下文仍 ${ctx.toFixed(0)}%` : " · 已回到提示符");
+      return;
+    }
+    if (elapsed >= 120_000) {
+      finishCompact(session, plan, " · 等待过久，继续后续任务");
     }
     return;
   }
@@ -2129,7 +2828,7 @@ async function tickPlan(session: AgentSession, plan: Plan) {
         try {
           await startCommit(session, plan, running);
         } catch (error) {
-          log(`${session.paneId} 提交发送失败：${error}`, true);
+          log(`${sessionLabel(session)} 提交发送失败：${error}`, true);
           completeRunning(session, plan, running);
         }
         return;
@@ -2147,7 +2846,8 @@ async function tickPlan(session: AgentSession, plan: Plan) {
       await startCompact(session, plan);
     } catch (error) {
       plan.compacting = false;
-      log(`${session.paneId} 压缩发送失败：${error}`, true);
+      plan.compactFrom = null;
+      log(`${sessionLabel(session)} 压缩发送失败：${error}`, true);
     }
     return;
   }
@@ -2167,7 +2867,7 @@ async function tickPlan(session: AgentSession, plan: Plan) {
     next.status = "pending";
     plan.phase = "idle";
     plan.planRunning = false;
-    log(`${session.paneId} ${String(error)}`, true);
+    log(`${sessionLabel(session)} ${String(error)}`, true);
     if (session.id === selectedId) {
       setAppTheme(session.agent);
       refreshSelectedPlan();
@@ -2190,8 +2890,13 @@ window.addEventListener("DOMContentLoaded", () => {
     $("refresh-btn").classList.add("spin");
     void poll();
   });
-  $("queue-btn").addEventListener("click", enqueue);
   $("import-btn").addEventListener("click", () => showImport());
+  $("plan-add").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const area = $<HTMLTextAreaElement>("plan-add-text");
+    addPlanTask(area.value);
+    area.value = "";
+  });
   $("import-pick").addEventListener("click", () => $("import-file").click());
   $("import-file").addEventListener("change", async (event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
@@ -2208,30 +2913,23 @@ window.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     $("import-file").click();
   });
-  $("send-btn").addEventListener("click", async () => {
-    const text = taskInput().value.trim();
-    if (!text) {
-      log("请输入要发送的文本", true);
-      return;
-    }
-    try {
-      const session = selected();
-      if (!session) throw new Error("请先选择一个 Herdr pane");
-      await sendNow(session, activePlan(), withCommit(text, commitAfterInput().checked), true);
-      taskInput().value = "";
-    } catch (error) {
-      log(String(error), true);
-    }
-  });
-  taskInput().addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-      event.preventDefault();
-      $("send-btn").click();
-    }
-  });
   $("herdr-guide-btn").addEventListener("click", () => showHerdrGuide());
   $("herdr-guide-close").addEventListener("click", () => hideHerdrGuide());
   $("about-close").addEventListener("click", () => hideAbout());
+  void listen<TermFrame>("term-bytes", (event) => {
+    const frame = event.payload;
+    if (termBuffering) {
+      termQueue.push(frame);
+      return;
+    }
+    if (!termLive || !term || frame.generation !== termGeneration) return;
+    paintTermFrame(frame);
+  });
+  void listen<string>("term-closed", (event) => {
+    if (!termLive) return;
+    termLive = false;
+    log(event.payload || "终端连接已断开", true);
+  });
   void listen<string>("app-menu", (event) => {
     if (event.payload === "ai-keys") showKeys();
     if (event.payload === "usage") showUsageGuide();
@@ -2361,18 +3059,48 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   syncRunButtons();
   window.addEventListener("keydown", onIdleGameKey);
-  const level = $<HTMLSelectElement>("idle-difficulty");
-  const driver = $<HTMLSelectElement>("idle-driver");
-  level.value = localStorage.getItem(SNAKE_LEVEL_KEY) ?? "normal";
-  driver.value = localStorage.getItem(SNAKE_DRIVER_KEY) ?? "manual";
-  level.addEventListener("change", () => {
-    localStorage.setItem(SNAKE_LEVEL_KEY, snakeLevel());
-    if (!$("preview-empty").classList.contains("hidden")) startControlLoop();
+  window.addEventListener("keyup", (event) => {
+    if ((event.key === "ArrowDown" || event.key === "s") && !dinoUsesLaya()) dinoDuck = false;
   });
+  const driver = $<HTMLSelectElement>("idle-driver");
+  const kind = $<HTMLSelectElement>("idle-game-kind");
+  kind.value = localStorage.getItem(IDLE_GAME_KEY) === "dino" ? "dino" : "snake";
+  loadDriverSelect();
+  $("idle-dino-best").textContent = String(dinoBest);
   driver.addEventListener("change", () => {
-    localStorage.setItem(SNAKE_DRIVER_KEY, driver.value);
+    const game = idleGame();
+    const next = snakeDriver();
+    localStorage.setItem(game === "dino" ? DINO_DRIVER_KEY : SNAKE_DRIVER_KEY, next);
+    snakeEpoch += 1;
     snakeRunning = false;
-    if (!$("preview-empty").classList.contains("hidden")) startControlLoop();
+    if (snakeTimer != null) {
+      window.clearInterval(snakeTimer);
+      snakeTimer = null;
+    }
+    stopDino();
+    syncSnakeControls();
+    if ($("preview-empty").classList.contains("hidden")) return;
+    if (game === "dino") resetDino();
+    else startControlLoop();
+  });
+  kind.addEventListener("change", () => {
+    const game = idleGame();
+    localStorage.setItem(IDLE_GAME_KEY, game);
+    loadDriverSelect(game);
+    snakeEpoch += 1;
+    snakeRunning = false;
+    if (snakeTimer != null) {
+      window.clearInterval(snakeTimer);
+      snakeTimer = null;
+    }
+    stopDino();
+    syncSnakeControls();
+    if ($("preview-empty").classList.contains("hidden")) return;
+    if (game === "dino") resetDino();
+    else {
+      resetSnake();
+      startControlLoop();
+    }
   });
   $("idle-start").addEventListener("click", beginGame);
   showIdleGame();
