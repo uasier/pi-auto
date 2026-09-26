@@ -16,6 +16,7 @@
       </a>
       <nav>
         <a href="#use">用法</a>
+        <a href="#look">界面</a>
         <a href="#keys">密钥</a>
         <a href="https://github.com/uasier/pi-auto">仓库</a>
         <a href="https://github.com/uasier/pi-auto/releases/latest">下载</a>
@@ -27,7 +28,7 @@
         <p class="kicker">macOS · 只连接 Herdr pane</p>
         <h1>空闲之后，把下一轮发出去。</h1>
         <p class="lead">
-          读 Pi、Claude、Codex、Grok 的终端，看 idle / working。计划绑在当前窗口上，换会话不会把任务带走。
+          读 Pi、Claude、Codex、Grok 的终端，看 idle / working。选中后可以直接输入，滚轮翻历史。计划绑在当前窗口上，换会话不会把任务带走。
         </p>
         <div class="actions">
           <a id="dl-arm" class="primary" href="https://github.com/uasier/pi-auto/releases/latest">Apple Silicon</a>
@@ -38,20 +39,35 @@
       </section>
 
       <figure class="shot">
-        <img src="shot.png" alt="终端自动应答窗口：左侧会话已连接，中间未选会话时是贪吃蛇，右侧是决策日志。" />
-        <figcaption>未选会话时。左侧是 Herdr pane，中间等你开始，或交给 Jev / Laya。</figcaption>
+        <img src="shot.png" alt="选中会话后的窗口：左侧是 pane 列表，中间是实时终端，右侧上方是可编辑的计划，下方是循环、续跑和提交。" />
+        <figcaption>选中 pane 之后。标题用窗口名。计划在执行上面，待执行的任务可以改。</figcaption>
       </figure>
+
+      <section id="look">
+        <h2>没选会话时，中间是一局游戏。</h2>
+        <p class="lead">贪吃蛇和恐龙的驱动分开记。蛇可以交给 Jev 或 Laya，收到决策才走。恐龙可以交给 Laya，按实时距离决定跑、跳或蹲，游戏不会停。</p>
+        <div class="gallery">
+          <figure class="shot">
+            <img src="shot-idle.png" alt="未选会话时的贪吃蛇，左侧列出已连接的 pane。" />
+            <figcaption>贪吃蛇。决策日志在右侧。</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="shot-dino.png" alt="未选会话时的恐龙跑酷，空格或上方向键跳跃。" />
+            <figcaption>恐龙。最高分记在本机。</figcaption>
+          </figure>
+        </div>
+      </section>
 
       <section id="use">
         <h2>左边选，中间看，右边排。</h2>
         <div class="grid">
           <article>
             <h3>终端</h3>
-            <p>选中 pane 后，中间是可输入、可滚轮翻历史的实时终端。</p>
+            <p>选中 pane 后可以直接输入。滚轮翻的是 Herdr 历史，中文不会拆成乱码。接入失败只记错误，不退回旧预览。</p>
           </article>
           <article>
             <h3>计划</h3>
-            <p>添加、编辑或导入文本。计划只属于当前选中的窗口。</p>
+            <p>写一条、导入，或改待执行的任务。正在执行和已完成的不能改。计划只属于当前窗口。</p>
           </article>
           <article>
             <h3>循环</h3>
@@ -74,7 +90,11 @@
 
       <section id="keys">
         <h2>密钥在系统菜单里。</h2>
-        <p class="lead">⌘ , 打开密钥设置。检查用的是当前输入，不必先保存。Key 留空用环境变量，地址留空用默认值。</p>
+        <p class="lead">⌘ , 打开密钥设置。检查用的是当前输入，不必先保存。Key 留空用环境变量，地址留空用默认值。Laya 同一时间只发一个决策。</p>
+        <figure class="shot">
+          <img src="shot-keys.png" alt="密钥设置窗口，分别填写 Jev、DeepSeek 和 Laya 的 Key 与地址。" />
+          <figcaption>三个决策各自有 Key、地址和检查。不必先保存再检查。</figcaption>
+        </figure>
         <table>
           <thead>
             <tr><th>决策</th><th>默认地址</th><th>环境变量</th></tr>
@@ -94,7 +114,7 @@
           <li>在 Herdr pane 里运行 agent。普通终端无法接入。</li>
           <li>确认本机有 <code>~/.config/herdr/herdr.sock</code>。</li>
         </ol>
-        <p class="note">没选会话时，可以在贪吃蛇和恐龙之间切换。恐龙交给 Laya 时不会停，按实时位置决定跳、蹲。本机会记住最高分。</p>
+        <p class="note">关闭窗口会退出应用，不留在后台。安装包未签名，首次请右键选择「打开」。</p>
       </section>
     </main>
 

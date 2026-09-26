@@ -4,6 +4,10 @@
 
 项目主页：<https://uasier.github.io/pi-auto/>
 
+![选中会话：左侧是 pane，中间是实时终端，右侧先是计划，再是执行](docs/shot.png)
+
+选中 pane 之后。标题用窗口名，不用 `w1:p2` 这种内部编号。计划在执行上面，待执行的任务可以改。
+
 ## 下载
 
 从 [GitHub Releases](https://github.com/uasier/pi-auto/releases) 安装：
@@ -25,19 +29,32 @@
 
 ## 怎么用
 
-左边选会话，中间看终端，右边排计划和循环。
+左边选会话，中间看终端，右边先排计划，再设执行。
 
-- **计划**：在执行面板上方添加、编辑或导入任务。计划只属于当前选中的窗口。
+1. 点「会话」，选一个 Herdr pane。必须是 Herdr 里打开的 Pi / Claude / Codex / Grok。
+2. 在「计划」里写任务，或导入文本。点标题或「编辑」可改待执行的任务。正在执行、提交中、已完成的不能改。
+3. 在「执行」里设循环、续跑和提交，再点「开始循环」。
+
+- **计划**：添加、编辑或导入。计划只属于当前选中的窗口，换会话不会带走任务。
 - **循环**：空闲稳定后发下一条。可设循环次数、空闲秒数，以及上下文百分比。超过阈值会先发压缩，再发下一条。
 - **卡住**：循环进行中，若 5 分钟内终端变化不到 1%，且 agent 不是 idle，会输入「继续」。
 - **续跑**：每轮结束后要求列出下一步，由 Jev、DeepSeek 或 Laya 选一项再发。可限制最多几次。置信不够或模型选择停止时，不再续跑。
 - **提交**：任务和续跑都结束后，单独再发一轮 `git commit`。不 push。
 
-终端预览按 pane 的行列显示，不把一行折成多行。
+## 终端
+
+选中 pane 后，中间是这个 pane 的实时终端，不是截图式回放。
+
+- 可以直接输入。
+- 滚轮翻的是 Herdr 历史，不会把 Page Up / Page Down 打进 pane。
+- 中文按 UTF-8 显示，不会拆成乱码。
+- 接入失败或断开时只记一条错误，不会退回旧的文本预览。
 
 ## 密钥
 
 应用菜单 → **密钥设置…**（⌘ ,）。Jev、DeepSeek、Laya 各自填写 Key 和 base URL。检查用的是当前输入，不必先保存。Key 留空时使用环境变量，地址留空时使用默认值。
+
+![密钥设置：Jev、DeepSeek、Laya 各自有 Key、地址和检查](docs/shot-keys.png)
 
 | 决策 | 默认地址 | 环境变量 |
 | --- | --- | --- |
@@ -45,11 +62,19 @@
 | DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
 | Laya | `http://127.0.0.1:8100` | `LAYA_API_KEY`（可空）、`LAYA_BASE_URL` |
 
-只填域名即可，请求时会补上对应路径。Laya 需要本机服务提供 `/health` 和 `/v1/systemone`。
+只填域名即可，请求时会补上对应路径。Laya 需要本机服务提供 `/health` 和 `/v1/systemone`。同一时间只发一个 Laya 决策，避免并发推理把本地服务打崩。
 
 ## 没选会话时
 
-没选会话时，中间可以在贪吃蛇和恐龙之间切换。贪吃蛇由手动、Jev 或 Laya 驱动，收到决策才走。恐龙节奏较慢，可手动，或交给 Laya 按实时距离决定跳或蹲。最高分记在本机。
+没选会话时，中间可以在贪吃蛇和恐龙之间切换。两种游戏的驱动分开记，切过去不会把另一个改掉。
+
+贪吃蛇可以手动，也可以交给 Jev 或 Laya。收到决策才走，不会自己定时走。蛇头碰到墙或任意一节蛇身都算失败。决策日志在右侧。
+
+恐龙可以手动，或交给 Laya。交给 Laya 时不会停，按实时距离决定跑、跳或蹲。没有 Jev。最高分记在本机。
+
+| 贪吃蛇 | 恐龙 |
+| --- | --- |
+| ![未选会话时的贪吃蛇](docs/shot-idle.png) | ![未选会话时的恐龙](docs/shot-dino.png) |
 
 ## 菜单
 
@@ -82,9 +107,9 @@ npm run tauri:build:mac
 
 ```bash
 npm run version:check
-npm run version:set -- 0.2.4
-npm run release:tag -- 0.2.4
-git push origin HEAD && git push origin v0.2.4
+npm run version:set -- 0.2.5
+npm run release:tag -- 0.2.5
+git push origin HEAD && git push origin v0.2.5
 ```
 
 推送 `v*` tag 后，GitHub Actions 会在 macOS arm64 / x64 构建，并上传到该 tag 的 Release。也可以在 Actions 里手动运行，把安装包补到已有 tag。

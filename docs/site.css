@@ -109,6 +109,13 @@ h2 {
   color: var(--muted);
   font-size: 13px;
 }
+.gallery {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 0 0 8px;
+}
+.gallery .shot { margin: 0; }
 
 section + section { margin-top: 48px; }
 .grid {
@@ -155,6 +162,6 @@ footer a:hover { color: var(--text); }
 
 @media (max-width: 800px) {
   h1 { font-size: 32px; }
-  .grid { grid-template-columns: 1fr; }
+  .grid, .gallery { grid-template-columns: 1fr; }
   .bar { align-items: flex-start; flex-direction: column; }
 }
