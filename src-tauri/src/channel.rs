@@ -521,7 +521,9 @@ fn connect_socket(config: &ChannelConfig) -> Result<Socket, String> {
         .ok_or("无法解析中继")?;
     let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(8)).map_err(|err| format!("连接中继失败：{err}"))?;
     tcp.set_nodelay(true).ok();
-    tcp.set_read_timeout(Some(Duration::from_millis(250))).ok();
+    // 握手需要等待公网往返，短读超时只用于连接后的转发轮询。
+    tcp.set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|err| format!("设置握手读超时失败：{err}"))?;
     tcp.set_write_timeout(Some(Duration::from_secs(10))).ok();
     let tls_config = tls_config(pin)?;
     let name = server_name(&parts.host)?;
@@ -532,6 +534,8 @@ fn connect_socket(config: &ChannelConfig) -> Result<Socket, String> {
     if response.status().as_u16() != 101 {
         return Err(format!("中继拒绝连接：HTTP {}", response.status()));
     }
+    socket.get_ref().sock.set_read_timeout(Some(Duration::from_millis(20)))
+        .map_err(|err| format!("设置通道读超时失败：{err}"))?;
     Ok(socket)
 }
 
@@ -862,6 +866,76 @@ use tungstenite::client::IntoClientRequest;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_local_relay(tls_delay: Duration, websocket_delay: Duration, reject_first: bool) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // 夹具证书和私钥仅用于回环连接，不用于任何真实服务。
+        let cert = include_bytes!("testdata/channel-cert.der").to_vec();
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(include_bytes!("testdata/channel-key.der").to_vec());
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.clone().into()], key.into())
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = ChannelConfig {
+            url: format!("wss://{}/v1/ws", listener.local_addr().unwrap()),
+            pin_sha256: hex_encode(&Sha256::digest(&cert)),
+            ..ChannelConfig::default()
+        };
+        let server = std::thread::spawn(move || {
+            if reject_first {
+                drop(listener.accept().unwrap());
+            }
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            tcp.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+            std::thread::sleep(tls_delay);
+            let conn = rustls::ServerConnection::new(Arc::new(server_config)).unwrap();
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            while tls.conn.is_handshaking() {
+                tls.conn.complete_io(&mut tls.sock).unwrap();
+            }
+            std::thread::sleep(websocket_delay);
+            let mut socket = tungstenite::accept(tls).unwrap();
+            let message = socket.read().unwrap();
+            socket.send(message).unwrap();
+        });
+
+        if reject_first {
+            let error = connect_socket(&config).err().expect("首次握手应失败");
+            assert!(error.starts_with("WebSocket 失败："), "{error}");
+        }
+        let result = connect_socket(&config);
+        if result.is_err() {
+            let _ = server.join();
+            panic!("本地中转握手失败：{}", result.err().unwrap());
+        }
+        let mut socket = result.unwrap();
+        let started = Instant::now();
+        assert!(matches!(socket.read(), Err(tungstenite::Error::Io(err))
+            if matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)));
+        assert!(started.elapsed() < Duration::from_millis(500), "握手完成后应恢复短轮询");
+        // 已验证空闲读取及时返回，回送验证使用宽松期限以避免调度抖动。
+        socket.get_ref().sock.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        socket.send(tungstenite::Message::Text("probe".into())).unwrap();
+        assert_eq!(socket.read().unwrap().into_text().unwrap(), "probe");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn connects_after_slow_tls_handshake() {
+        check_local_relay(Duration::from_millis(100), Duration::ZERO, false);
+    }
+
+    #[test]
+    fn connects_after_slow_websocket_handshake() {
+        check_local_relay(Duration::ZERO, Duration::from_millis(100), false);
+    }
+
+    #[test]
+    fn reconnects_after_failed_handshake() {
+        check_local_relay(Duration::ZERO, Duration::ZERO, true);
+    }
 
     #[test]
     fn parses_public_wss() {
