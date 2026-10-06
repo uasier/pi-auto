@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">herdr+ 远程</string>
+    <string name="channel_running">通道连接中</string>
+</resources>

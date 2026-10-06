@@ -1,16 +1,20 @@
 import { LAUNCH_COMMAND, selected, store } from "./store";
 import { log, logShortcut, toggleLogDock } from "./log";
 import { JEV_PROVIDER_STORAGE, commitAfterInput, compactAtInput, idleMsInput, jevMaxInput, jevOnInput, jevProvider, jevProviderInput, loopRoundsInput } from "./fields";
-import { pauseLoop, poll, startLoop, stopLoop, syncPlanInputsFromUi } from "./plan";
+import { syncPlanInputsFromUi } from "./plan";
+import { pauseLoop, poll, startLoop, stopLoop } from "./plan-run";
 import { addPlanTask, renderLoopStatus, syncExecPanels, syncRunButtons } from "./view";
-import { HERDR_DOCS, HERDR_INSTALL_CMD, KEY_DEFAULTS, KEY_IDS, SKIP_VERSION_KEY, baseInput, checkAllProviders, checkProvider, confirmImport, createTerminal, hideAbout, hideHerdrGuide, hideImport, hideKeys, hideTermCreate, hideUsageGuide, keyInput, loadAppInfo, markUsageSeen, maybeCheckUpdate, pickTermCwd, refreshHerdrStatus, refreshImportPreview, renderAbout, runUpdateCheck, saveKeys, setKeyNote, setKeyStatus, showAbout, showAboutError, showDebugFlag, showHerdrGuide, showImport, showKeys, showTermCreate, showUsageGuide } from "./dialogs";
+import { HERDR_DOCS, HERDR_INSTALL_CMD, KEY_DEFAULTS, KEY_IDS, SKIP_VERSION_KEY, baseInput, checkAllProviders, checkProvider, confirmImport, createTerminal, hideAbout, hideHerdrGuide, hideImport, hideKeys, hideTermCreate, hideUsageGuide, loadAppInfo, markUsageSeen, maybeCheckUpdate, pickTermCwd, refreshHerdrStatus, refreshImportPreview, renderAbout, runUpdateCheck, saveKeys, setKeyNote, setKeyStatus, showAbout, showAboutError, showDebugFlag, showHerdrGuide, showImport, showKeys, showTermCreate, showUsageGuide } from "./dialogs";
 import { installIdleGame } from "./idle-game";
 import { bindPromptSession, onPromptKey, onTermBytes, onTermClosed, replaceInputWithRefine } from "./terminal";
-import type { DecisionProvider } from "./keys";
+import { keyInput, type DecisionProvider } from "./keys";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $ } from "./dom";
+import { hideShortcuts, saveShortcuts, shortcutEnabled, showShortcuts } from "./shortcuts";
+import { hideChannel, installChannel, saveChannel, showChannel } from "./channel";
+import { installTheme } from "./theme";
 
 window.addEventListener("DOMContentLoaded", () => {
   $("new-window-btn").addEventListener("click", () => {
@@ -75,10 +79,16 @@ window.addEventListener("DOMContentLoaded", () => {
       logShortcut("⌘, 密钥设置");
       showKeys();
     }
+    if (event.payload === "channel") showChannel();
     if (event.payload === "refine") {
+      if (!shortcutEnabled("refine")) {
+        log("优化输入已在快捷键里关闭");
+        return;
+      }
       logShortcut("⌘⇧O 优化输入");
       void replaceInputWithRefine();
     }
+    if (event.payload === "shortcuts") showShortcuts();
     if (event.payload === "new-window") logShortcut("⌘N 新建窗口");
     if (event.payload === "usage") {
       logShortcut("⌘/ 使用说明");
@@ -86,11 +96,11 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (event.payload === "check-update") {
       showAbout();
-      void runUpdateCheck(true, false);
+      void runUpdateCheck(false);
     }
   });
   $("check-update").addEventListener("click", () => {
-    void runUpdateCheck(true, false);
+    void runUpdateCheck(false);
   });
   $("open-release").addEventListener("click", () => {
     void invoke("open_release_page", { url: store.updateInfo?.htmlUrl ?? null });
@@ -166,6 +176,11 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   $("keys-save").addEventListener("click", saveKeys);
   $("keys-close").addEventListener("click", hideKeys);
+  $("shortcuts-save").addEventListener("click", saveShortcuts);
+  $("shortcuts-close").addEventListener("click", hideShortcuts);
+  $("shortcuts-modal").addEventListener("click", (event) => {
+    if (event.target === $("shortcuts-modal")) hideShortcuts();
+  });
   $("keys-check-all").addEventListener("click", () => void checkAllProviders());
   $("keys-modal").addEventListener("click", (event) => {
     if (event.target === $("keys-modal")) hideKeys();
@@ -206,6 +221,21 @@ window.addEventListener("DOMContentLoaded", () => {
       hideTermCreate();
       return;
     }
+    if (!$("shortcuts-modal").classList.contains("hidden") && event.key === "Escape") {
+      event.preventDefault();
+      hideShortcuts();
+      return;
+    }
+    if (!$("channel-modal").classList.contains("hidden") && event.key === "Escape") {
+      event.preventDefault();
+      hideChannel();
+      return;
+    }
+    if (!$("channel-modal").classList.contains("hidden") && (event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      void saveChannel();
+      return;
+    }
     if ($("keys-modal").classList.contains("hidden")) return;
     if (event.key === "Escape") {
       event.preventDefault();
@@ -220,6 +250,8 @@ window.addEventListener("DOMContentLoaded", () => {
   bindPromptSession(() => selected());
   installIdleGame();
 
+  installChannel();
+  void installTheme();
   void showDebugFlag();
   log("已启动");
   void loadAppInfo().then(() => maybeCheckUpdate());

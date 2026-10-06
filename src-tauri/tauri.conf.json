@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Pi 自动应答",
+  "productName": "herdr+",
   "version": "0.2.7",
   "identifier": "com.uasier.piauto",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "终端自动应答",
+        "title": "herdr+",
         "width": 1180,
         "height": 800,
         "minWidth": 880,

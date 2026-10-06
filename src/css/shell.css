@@ -9,11 +9,6 @@
 .app.plan-open { grid-template-columns: 0 minmax(0, 1fr) 348px; }
 .app.rail-open.plan-open { grid-template-columns: 220px minmax(0, 1fr) 348px; }
 
-.app[data-agent="pi"] { --agent: var(--pi); }
-.app[data-agent="claude"] { --agent: var(--claude); }
-.app[data-agent="codex"] { --agent: var(--codex); }
-.app[data-agent="grok"] { --agent: var(--grok); }
-
 .stage {
   min-width: 0;
   min-height: 0;

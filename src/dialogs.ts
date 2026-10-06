@@ -3,10 +3,11 @@ import type { AppInfo, HerdrStatus, UpdateCheck } from "./types";
 import { $, escapeHtml, sessionLabel, shortPath } from "./dom";
 import { log } from "./log";
 import { commitAfterInput } from "./fields";
-import { activePlan, makeTask, parseTaskList, poll, snapshotTemplate, taskTitle } from "./plan";
+import { activePlan, makeTask, parseTaskList, snapshotTemplate, taskTitle } from "./plan";
+import { poll } from "./plan-run";
 import { renderQueue } from "./view";
-import { refreshGameBackends } from "./idle-game";
-import { DEEPSEEK_BASE_STORAGE, DEEPSEEK_KEY_STORAGE, JEV_BASE_STORAGE, JEV_KEY_STORAGE, LAYA_BASE_STORAGE, LAYA_KEY_STORAGE, type DecisionProvider } from "./keys";
+import { refreshGameBackends } from "./snake";
+import { DEEPSEEK_BASE_STORAGE, DEEPSEEK_KEY_STORAGE, JEV_BASE_STORAGE, JEV_KEY_STORAGE, LAYA_BASE_STORAGE, LAYA_KEY_STORAGE, keyInput, type DecisionProvider } from "./keys";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -29,10 +30,6 @@ function storeSetting(storage: string, value: string) {
   const text = value.trim();
   if (text) localStorage.setItem(storage, text);
   else localStorage.removeItem(storage);
-}
-
-export function keyInput(provider: DecisionProvider) {
-  return $<HTMLInputElement>(`key-${provider}`);
 }
 
 export function baseInput(provider: DecisionProvider) {
@@ -84,7 +81,7 @@ export function saveKeys() {
   void refreshGameBackends();
 }
 
-export function formBase(provider: DecisionProvider) {
+function formBase(provider: DecisionProvider) {
   const value = baseInput(provider).value.trim();
   if (!value) return null;
   if (!/^https?:\/\//i.test(value)) return undefined;
@@ -200,7 +197,7 @@ export function hideHerdrGuide() {
   maybeShowUsageGuide();
 }
 
-export function usageSeen() {
+function usageSeen() {
   return localStorage.getItem(USAGE_SEEN_KEY) === "1";
 }
 
@@ -217,7 +214,7 @@ export function hideUsageGuide() {
   $("usage-guide").classList.add("hidden");
 }
 
-export function maybeShowUsageGuide() {
+function maybeShowUsageGuide() {
   if (usageSeen()) return;
   if (!$("herdr-guide").classList.contains("hidden")) return;
   showUsageGuide();
@@ -279,12 +276,12 @@ export function showAboutError(message: string) {
   err.classList.remove("hidden");
 }
 
-export async function runUpdateCheck(force: boolean, quiet: boolean) {
+export async function runUpdateCheck(quiet: boolean) {
   if (store.updateChecking) return null;
   store.updateChecking = true;
   renderAbout();
   try {
-    const info = await invoke<UpdateCheck>("check_update", { force });
+    const info = await invoke<UpdateCheck>("check_update");
     store.updateInfo = info;
     localStorage.setItem(UPDATE_CHECKED_KEY, String(Date.now()));
     if (!quiet && !info.available) log(`已是最新版本 ${info.currentVersion}`);
@@ -324,18 +321,14 @@ export async function loadAppInfo() {
 export async function maybeCheckUpdate() {
   const last = Number(localStorage.getItem(UPDATE_CHECKED_KEY) || 0);
   if (last && Date.now() - last < UPDATE_CHECK_EVERY_MS) return;
-  await runUpdateCheck(false, true);
+  await runUpdateCheck(true);
 }
 
 export async function refreshHerdrStatus() {
   try {
     const status = await invoke<HerdrStatus>("herdr_status");
     const el = $("herdr-banner");
-    const text = status.connected
-      ? `已连接 · ${status.agentCount}`
-      : status.error
-        ? `未连接`
-        : "未连接";
+    const text = status.connected ? `已连接 · ${status.agentCount}` : "未连接";
     if (text !== store.lastHerdrText) {
       store.lastHerdrText = text;
       el.className = `herdr-banner ${status.connected ? "on" : "off"}`;
@@ -362,7 +355,7 @@ export async function refreshHerdrStatus() {
   }
 }
 
-export function termCwdChoices() {
+function termCwdChoices() {
   const seen = new Set<string>();
   const items: string[] = [];
   const add = (cwd: string) => {
@@ -378,7 +371,7 @@ export function termCwdChoices() {
   return items;
 }
 
-export function setTermCwd(cwd: string) {
+function setTermCwd(cwd: string) {
   $<HTMLInputElement>("term-cwd").value = cwd;
   const label = $("term-cwd-label");
   label.textContent = cwd ? shortPath(cwd) : "沿用当前工作区";
@@ -390,7 +383,7 @@ export function setTermCwd(cwd: string) {
   else localStorage.removeItem(TERM_CWD_KEY);
 }
 
-export function renderTermPaths(preferred: string) {
+function renderTermPaths(preferred: string) {
   const box = $("term-cwd-list");
   const choices = termCwdChoices();
   if (preferred && !choices.includes(preferred)) choices.unshift(preferred);

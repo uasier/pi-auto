@@ -496,58 +496,28 @@ fn choose_deepseek(
         .map(|option| format!("{}: {}", option.id, truncate(&option.text, 240)))
         .collect::<Vec<_>>()
         .join("\n");
-    let body = json!({
-        "model": std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| DEEPSEEK_MODEL.into()),
-        "temperature": 0,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是续跑决策器。只输出一个 JSON 对象，不要解释。字段：choice（必须是给定 id 或 stop）、confidence（0 到 1，对这个选择有多确定）、continueNow（0 到 1，是否值得立刻做）。没有明确、范围合适、还没做完的下一步时，choice 必须是 stop。"
-            },
-            {
-                "role": "user",
-                "content": format!("候选：\n{listed}\nstop: 没有值得现在继续的下一步\n\n{}", truncate(state, 6000))
-            }
-        ]
-    });
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(45))
-        .user_agent("pi-auto")
-        .build()
-        .map_err(|e| format!("创建 DeepSeek 客户端失败：{e}"))?;
-    let endpoint = service_endpoint(
+    let content = prompt::post_deepseek(
+        key,
         base_url,
-        &["DEEPSEEK_BASE_URL"],
-        "https://api.deepseek.com",
-        "/chat/completions",
-    );
-    let response = client
-        .post(endpoint)
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .map_err(|e| format!("DeepSeek 请求失败：{e}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .map_err(|e| format!("DeepSeek 响应读取失败：{e}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "DeepSeek HTTP {}：{}",
-            status.as_u16(),
-            truncate(&text, 240)
-        ));
-    }
-    parse_deepseek(&text, &allowed)
+        "你是续跑决策器。只输出一个 JSON 对象，不要解释。字段：choice（必须是给定 id 或 stop）、confidence（0 到 1，对这个选择有多确定）、continueNow（0 到 1，是否值得立刻做）。没有明确、范围合适、还没做完的下一步时，choice 必须是 stop。",
+        &format!("候选：\n{listed}\nstop: 没有值得现在继续的下一步\n\n{}", truncate(state, 6000)),
+        true,
+        0.0,
+    )?;
+    decision_from_content(&content, &allowed)
 }
 
+#[cfg(test)]
 fn parse_deepseek(text: &str, allowed: &[String]) -> Result<JevDecision, String> {
     let value: Value = serde_json::from_str(text).map_err(|e| format!("DeepSeek JSON 无效：{e}"))?;
     let content = value
         .pointer("/choices/0/message/content")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    decision_from_content(content, allowed)
+}
+
+fn decision_from_content(content: &str, allowed: &[String]) -> Result<JevDecision, String> {
     let payload = extract_json(content);
     let decision: Value =
         serde_json::from_str(&payload).map_err(|e| format!("DeepSeek 决策不是 JSON：{e}"))?;
@@ -649,7 +619,10 @@ pub use prompt::{complete_options, refine_prompt, CompleteResult};
 
 #[cfg(test)]
 mod tests {
-    use super::{laya_endpoint, normalize_choice, parse_decision, parse_deepseek};
+    use super::{
+        decision_from_content, laya_endpoint, normalize_choice, normalize_provider, parse_decision,
+        parse_deepseek, service_endpoint, truncate,
+    };
 
     #[test]
     fn parses_choice_and_noul() {
@@ -696,5 +669,66 @@ mod tests {
             laya_endpoint(Some("http://127.0.0.1:8000/v1/systemone".into())),
             "http://127.0.0.1:8000/v1/systemone"
         );
+    }
+
+    #[test]
+    fn missing_answers_is_an_error() {
+        let err = parse_decision(r#"{"model":"jev"}"#).unwrap_err();
+        assert!(err.contains("answers"));
+    }
+
+    #[test]
+    fn choice_index_maps_to_allowed_id() {
+        let allowed = vec!["s1".into(), "s2".into()];
+        assert_eq!(normalize_choice("2", &allowed), "s2");
+        assert_eq!(normalize_choice(" s1 ", &allowed), "s1");
+        assert_eq!(normalize_choice("停止", &allowed), "stop");
+        assert_eq!(normalize_choice(" STOP ", &allowed), "stop");
+    }
+
+    #[test]
+    fn unknown_provider_falls_back_to_jev() {
+        assert_eq!(normalize_provider(None), "jev");
+        assert_eq!(normalize_provider(Some("deepseek".into())), "deepseek");
+        assert_eq!(normalize_provider(Some("nope".into())), "jev");
+    }
+
+    #[test]
+    fn endpoint_suffix_is_not_duplicated() {
+        assert_eq!(
+            service_endpoint(Some("https://api.example/".into()), &[], "http://default", "/v1/systemone"),
+            "https://api.example/v1/systemone"
+        );
+        assert_eq!(
+            service_endpoint(
+                Some("https://api.example/v1/systemone".into()),
+                &[],
+                "http://default",
+                "/v1/systemone",
+            ),
+            "https://api.example/v1/systemone"
+        );
+        assert_eq!(
+            service_endpoint(None, &[], "http://127.0.0.1:8100", "/v1/systemone"),
+            "http://127.0.0.1:8100/v1/systemone"
+        );
+    }
+
+    #[test]
+    fn deepseek_content_uses_continue_now_alias() {
+        let decision = decision_from_content(
+            r#"说明 {"choice":"s1","confidence":1.4,"continue_now":-1}"#,
+            &["s1".into()],
+        )
+        .unwrap();
+        assert_eq!(decision.choice, "s1");
+        assert_eq!(decision.confidence, 1.0);
+        assert_eq!(decision.continue_now, 0.0);
+    }
+
+    #[test]
+    fn truncate_counts_characters() {
+        assert_eq!(truncate("中文测试", 2), "中文…");
+        assert_eq!(truncate("ok", 4), "ok");
     }
 }

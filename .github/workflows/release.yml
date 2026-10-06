@@ -96,18 +96,19 @@ jobs:
           tauriScript: npm run tauri
           args: ${{ matrix.args }}
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.event.inputs.release_tag || '' }}
-          releaseName: 终端自动应答 v__VERSION__
+          releaseName: herdr+ v__VERSION__
           releaseBody: |
-            通过 Herdr 管理 Pi / Claude / Codex / Grok：空闲后自动发送下一轮任务。
+            herdr+ 跑在 Herdr 上面：接管 pane，空闲后发送下一轮。
 
             ## 安装包
             - macOS Apple Silicon：`pi-auto_*_aarch64.dmg`
             - macOS Intel：`pi-auto_*_x64.dmg`
+            - Android：`herdr-plus-remote.apk`
 
             安装包未签名。若提示「已损坏，无法打开」，把 App 放进「应用程序」后执行：
 
             ```bash
-            xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"
+            xattr -dr com.apple.quarantine "/Applications/herdr+.app"
             ```
 
             应用内点版本号可检查更新并下载当前系统对应安装包。
@@ -125,3 +126,44 @@ jobs:
             src-tauri/target/**/release/bundle/dmg/*.dmg
             src-tauri/target/**/release/bundle/macos/*.app
           if-no-files-found: warn
+
+  android:
+    needs: verify
+    runs-on: ubuntu-latest
+    name: Build Android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Assemble release APK
+        working-directory: remote-android
+        run: gradle :app:assembleRelease
+
+      - name: Name release asset
+        run: cp remote-android/app/build/outputs/apk/release/app-release.apk herdr-plus-remote.apk
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-plus-remote
+          path: herdr-plus-remote.apk
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" herdr-plus-remote.apk --clobber --repo "${GITHUB_REPOSITORY}"

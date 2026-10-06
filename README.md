@@ -1,65 +1,62 @@
-# 终端自动应答
+# herdr+
 
-通过 [Herdr](https://github.com/herdrdev/herdr) 接管 Pi / Claude / Codex / Grok 的 pane：读终端、看 idle / working，空闲后发送下一轮。计划绑在当前窗口上，换会话不会把任务带走。
+herdr+ 是跑在 [Herdr](https://github.com/herdrdev/herdr) 上面的一层。Herdr 负责窗口、pane、agent 和终端本身；herdr+ 只通过 Herdr 的接口读状态、接实时终端、发下一轮。没有 Herdr，这个应用打不开任何会话。
 
 项目主页：<https://uasier.github.io/pi-auto/>
 
 ![选中会话：左侧是 pane，中间是实时终端，右侧先是计划，再是执行](docs/shot.png)
 
-选中 pane 之后。标题用窗口名，不用 `w1:p2` 这种内部编号。计划在执行上面，待执行的任务可以改。
+## 底层是 Herdr
+
+herdr+ 不自己起终端，也不自己识别 Pi / Claude / Codex / Grok。
+
+- 会话列表来自 Herdr 的 pane。标题用 Herdr 窗口名，不用 `w1:p2`。
+- 中间的终端是接上 Herdr 的客户端套接字，看到的是 Herdr 正在画的那一屏。滚轮走的是 Herdr 的历史，不是往 pane 里塞翻页键。
+- 「终端」按钮调用 Herdr 新建窗口。目录从已有会话或系统选择器来。
+- 菜单里的主题就是 Herdr 的内置主题。切换会写入 Herdr 的 `config.toml`，并让 Herdr 重新加载，所以 Herdr 自己的终端配色一起变。
+- 空闲、工作中、卡住，看的是 Herdr 报上来的 agent 状态和终端输出。
+
+本机需要先有 `~/.config/herdr/herdr.sock`。普通 VS Code 终端或 Terminal.app 接不进来。
 
 ## 下载
 
-从 [GitHub Releases](https://github.com/uasier/pi-auto/releases) 安装：
+从 [GitHub Releases](https://github.com/uasier/pi-auto/releases) 安装。仓库名和安装包文件名仍是 `pi-auto`，安装后的应用是 **herdr+**。
 
 - macOS Apple Silicon：`pi-auto_*_aarch64.dmg`
 - macOS Intel：`pi-auto_*_x64.dmg`
 
-安装包未签名。从浏览器下载后，macOS 会把它标成「已损坏」。把 App 拖进「应用程序」后，在终端执行：
+安装包未签名。拖进「应用程序」后，若提示已损坏，执行：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"
+xattr -dr com.apple.quarantine "/Applications/herdr+.app"
 ```
 
-然后再打开。菜单里的「检查更新…」会对照最新 tag 下载安装包。
-
-> 更新检查默认仓库是 `uasier/pi-auto`。fork 后改 `src-tauri/src/update.rs` 里的 `DEFAULT_REPO`，或设置 `PI_AUTO_GITHUB_REPO`。
-
-## 前提
-
-1. 安装并启动 [Herdr](https://herdr.dev/docs/install/)
-2. 在 **Herdr pane** 里运行 agent。普通 VS Code / Terminal.app 无法接入
-3. 本机出现 `~/.config/herdr/herdr.sock`
-
-未连接时，左侧有安装引导。
+右键打开清不掉这个标记。菜单「检查更新…」对照 `uasier/pi-auto` 的最新 tag。fork 后改 `src-tauri/src/update.rs` 的 `DEFAULT_REPO`，或设置 `PI_AUTO_GITHUB_REPO`。
 
 ## 怎么用
 
 左边选会话，中间看终端，右边先排计划，再设执行。
 
-1. 点「会话」，选一个 Herdr pane。必须是 Herdr 里打开的 Pi / Claude / Codex / Grok。
-2. 在「计划」里写任务，或导入文本。点标题或「编辑」可改待执行的任务。正在执行、提交中、已完成的不能改。
-3. 在「执行」里设循环、续跑和提交，再点「开始循环」。
+1. 启动 Herdr，在 pane 里打开 Pi、Claude、Codex 或 Grok。
+2. 在 herdr+ 里选这个会话。
+3. 在「计划」里写任务，或导入文本。待执行的可以改；正在执行、提交中、已完成的不能改。
+4. 在「执行」里设循环、续跑和提交，再点「开始循环」。
 
-- **计划**：添加、编辑或导入。计划只属于当前选中的窗口，换会话不会带走任务。
-- **循环**：空闲稳定后发下一条。可设循环次数、空闲秒数，以及上下文百分比。超过阈值会先发压缩，再发下一条。
-- **卡住**：循环进行中，若 5 分钟内终端变化不到 1%，且 agent 不是 idle，会输入「继续」。
-- **续跑**：每轮结束后要求列出下一步，由 Jev、DeepSeek 或 Laya 选一项再发。可限制最多几次。置信不够或模型选择停止时，不再续跑。
+- **计划**：只属于当前窗口。换会话不会把任务带走。
+- **循环**：空闲稳定后发下一条。可设次数、空闲秒数和上下文百分比。超过阈值会先发压缩。
+- **卡住**：循环中若 5 分钟内终端变化不到 1%，且不是 idle，会输入「继续」。
+- **续跑**：每轮结束后列出下一步，由 Jev、DeepSeek 或 Laya 选一项再发。置信不够或选择停止就停。
 - **提交**：任务和续跑都结束后，单独再发一轮 `git commit`。不 push。
 
 ## 终端
 
-选中 pane 后，中间是这个 pane 的实时终端，不是截图式回放。
+选中 pane 后可以直接输入。接入失败或断开只记一条错误，不会退回旧的文本预览。中文按 UTF-8 显示。
 
-- 会话栏的「终端」会在 Herdr 里新建一个窗口。目录从已有会话里点选，或用系统选择器挑选，不必手填。也可直接启动 Pi、Claude、Codex 或 Grok。
-- 可以直接输入。
-- 滚轮翻的是 Herdr 历史，不会把 Page Up / Page Down 打进 pane。
-- 中文按 UTF-8 显示，不会拆成乱码。
-- 接入失败或断开时只记一条错误，不会退回旧的文本预览。
+## 密钥和快捷键
 
-## 密钥
-
-应用菜单 → **密钥设置…**（⌘ ,）。Jev、DeepSeek、Laya 各自填写 Key 和 base URL。检查用的是当前输入，不必先保存。Key 留空时使用环境变量，地址留空时使用默认值。
+- **密钥设置…** ⌘ ,。Jev、DeepSeek、Laya 各自填 Key 和地址。检查用当前输入，不必先保存。
+- **系统 → 管理快捷键…**。开关双击 Tab 补全、双击 Shift 追加预置文本、⌘⇧O 优化输入。预置文本也在这里写。
+- **主题**。主菜单里选 Herdr 主题。浅色主题名字后面有「浅色」。
 
 ![密钥设置：Jev、DeepSeek、Laya 各自有 Key、地址和检查](docs/shot-keys.png)
 
@@ -69,15 +66,15 @@ xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"
 | DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
 | Laya | `http://127.0.0.1:8100` | `LAYA_API_KEY`（可空）、`LAYA_BASE_URL` |
 
-只填域名即可，请求时会补上对应路径。Laya 需要本机服务提供 `/health` 和 `/v1/systemone`。同一时间只发一个 Laya 决策，避免并发推理把本地服务打崩。
+只填域名即可。Laya 需要本机提供 `/health` 和 `/v1/systemone`。同一时间只发一个 Laya 决策。
 
 ## 没选会话时
 
-没选会话时，中间可以在贪吃蛇和恐龙之间切换。两种游戏的驱动分开记，切过去不会把另一个改掉。
+中间可以在贪吃蛇和恐龙之间切换。两种游戏的驱动分开记。
 
-贪吃蛇可以手动，也可以交给 Jev 或 Laya。收到决策才走，不会自己定时走。蛇头碰到墙或任意一节蛇身都算失败。决策日志在右侧。
+贪吃蛇可手动，或交给 Jev / Laya。收到决策才走。蛇头碰到墙或任意一节身体都算失败。
 
-恐龙可以手动，或交给 Laya。交给 Laya 时不会停，按实时距离决定跑、跳或蹲。没有 Jev。最高分记在本机。
+恐龙可手动，或交给 Laya。交给 Laya 时不暂停，按实时距离决定跑、跳或蹲。没有 Jev。
 
 | 贪吃蛇 | 恐龙 |
 | --- | --- |
@@ -85,13 +82,11 @@ xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"
 
 ## 菜单
 
-- **密钥设置…** ⌘ ,
-- **检查更新…**
-- **优化对话…** ⌘⇧O。把选中的本地请求改写成更完整的问题，再发送或加入计划
-- **使用说明** ⌘ /
-- **新建窗口** ⌘ N。每个窗口各自选会话、看终端
-- **关闭窗口** ⌘ W。关掉最后一个窗口会退出，不留在后台
-- **退出** ⌘ Q
+- **herdr+**：密钥、主题、检查更新、新建窗口、关闭窗口、退出
+- **系统**：管理快捷键
+- **说明**：优化对话 ⌘⇧O，使用说明 ⌘ /
+
+⌘ N 每个窗口各自选会话。关掉最后一个窗口会退出，不留在后台。
 
 ## 开发
 
@@ -108,29 +103,24 @@ npm run tauri dev
 npm run tauri:build:mac
 ```
 
-产物会复制到仓库根目录的 [`release/`](./release/)（`.dmg` 与 `.app`）。
-
-## 发布
+产物在仓库根目录的 [`release/`](./release/)。
 
 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和对应 lock 的版本号必须一致。
 
 ```bash
 npm run version:check
-npm run version:set -- 0.2.5
-npm run release:tag -- 0.2.5
-git push origin HEAD && git push origin v0.2.5
+npm run version:set -- 0.2.8
+npm run release:tag -- 0.2.8
+git push origin HEAD && git push origin v0.2.8
 ```
 
-推送 `v*` tag 后，GitHub Actions 会在 macOS arm64 / x64 构建，并上传到该 tag 的 Release。也可以在 Actions 里手动运行，把安装包补到已有 tag。
+推送 `v*` tag 后，GitHub Actions 会在 macOS arm64 / x64 构建并上传 Release。安装包文件名仍是 `pi-auto_[version]_[arch].dmg`。
 
-## 注意事项
+## 注意
 
-- Git 根目录是本目录（`pi-auto/`），不要把上层中文文件夹当作仓库。
-- 安装包未签名。下载后若提示已损坏，执行 `xattr -dr com.apple.quarantine "/Applications/Pi 自动应答.app"`。
-- 更新检查走 GitHub Releases API。仓库需公开，或自行处理 token。
-- 发布资源名固定为 `pi-auto_[version]_[arch].dmg`，避免中文产品名被剥掉。
-- Herdr 要先于本应用运行。上下文压缩依赖终端里能读到的百分比。
-- Laya 的推理不要并发打。本应用同一时间只发一个决策请求。
+- 源码目录和 Git 仓库仍叫 `pi-auto`。产品名是 herdr+。
+- Herdr 要先运行。上下文压缩依赖终端里能读到的百分比。
+- Laya 不要并发打。
 
 ## 许可证
 

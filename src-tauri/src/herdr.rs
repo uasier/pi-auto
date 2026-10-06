@@ -13,8 +13,6 @@ static REQ: AtomicU64 = AtomicU64::new(1);
 #[serde(rename_all = "camelCase")]
 pub struct HerdrStatus {
     pub connected: bool,
-    pub endpoint: Option<String>,
-    pub pane_count: usize,
     pub agent_count: usize,
     pub error: Option<String>,
 }
@@ -40,12 +38,16 @@ fn pane_title(wire: &Value) -> String {
     raw.trim_start_matches('-').trim().to_string()
 }
 
-pub fn discover_socket() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let config = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(&home).join(".config"));
-    let root = config.join("herdr");
+        .unwrap_or_else(|_| PathBuf::from(home).join(".config"));
+    Some(config.join("herdr"))
+}
+
+pub fn discover_socket() -> Option<PathBuf> {
+    let root = config_dir()?;
     let mut candidates = vec![root.join("herdr.sock")];
     if let Ok(entries) = std::fs::read_dir(root.join("sessions")) {
         for entry in entries.flatten() {
@@ -57,17 +59,13 @@ pub fn discover_socket() -> Option<PathBuf> {
 
 pub fn status() -> HerdrStatus {
     match list_panes() {
-        Ok((endpoint, panes)) => HerdrStatus {
+        Ok((_, panes)) => HerdrStatus {
             connected: true,
-            endpoint: Some(endpoint),
-            pane_count: panes.len(),
             agent_count: panes.len(),
             error: None,
         },
         Err(error) => HerdrStatus {
             connected: false,
-            endpoint: discover_socket().map(|p| p.display().to_string()),
-            pane_count: 0,
             agent_count: 0,
             error: Some(error),
         },
@@ -324,6 +322,12 @@ fn normalize_kind(raw: &str) -> String {
     }
 }
 
+pub fn reload_config() -> Result<(), String> {
+    let sock = discover_socket().ok_or_else(|| "Herdr 未运行".to_string())?;
+    rpc(&sock, "server.reload_config", json!({}))?;
+    Ok(())
+}
+
 fn rpc(sock: &Path, method: &str, params: Value) -> Result<Value, String> {
     let mut stream = UnixStream::connect(sock).map_err(|e| format!("连接 Herdr 失败：{e}"))?;
     stream
@@ -364,4 +368,38 @@ fn rpc(sock: &Path, method: &str, params: Value) -> Result<Value, String> {
         .get("result")
         .cloned()
         .ok_or_else(|| "Herdr 响应缺少 result".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expand_cwd, normalize_kind, pane_title};
+    use serde_json::json;
+
+    #[test]
+    fn title_strips_pi_mark_and_prefers_stripped() {
+        let wire = json!({
+            "terminal_title": "π - 旧标题",
+            "terminal_title_stripped": "π - CNAS 系统"
+        });
+        assert_eq!(pane_title(&wire), "CNAS 系统");
+        assert_eq!(pane_title(&json!({"terminal_title": "- 草稿"})), "草稿");
+        assert_eq!(pane_title(&json!({})), "");
+    }
+
+    #[test]
+    fn cwd_expands_tilde() {
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(expand_cwd("~"), home);
+        assert_eq!(expand_cwd("~/work"), format!("{home}/work"));
+        assert_eq!(expand_cwd("  /tmp  "), "/tmp");
+    }
+
+    #[test]
+    fn agent_kind_is_normalized() {
+        assert_eq!(normalize_kind("Pi"), "pi");
+        assert_eq!(normalize_kind("Claude Code"), "claude");
+        assert_eq!(normalize_kind("codex"), "codex");
+        assert_eq!(normalize_kind("Grok"), "grok");
+        assert_eq!(normalize_kind("zsh"), "zsh");
+    }
 }

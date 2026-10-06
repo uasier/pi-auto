@@ -126,7 +126,7 @@ export function stopLoop() {
   renderQueue(true);
 }
 
-export function finishPlan(session: AgentSession, plan: Plan) {
+function finishPlan(session: AgentSession, plan: Plan) {
   plan.planRunning = false;
   plan.currentRound = 1;
   plan.phase = "idle";
@@ -139,7 +139,7 @@ export function finishPlan(session: AgentSession, plan: Plan) {
   }
 }
 
-export function startNextRound(session: AgentSession, plan: Plan) {
+function startNextRound(session: AgentSession, plan: Plan) {
   const total = loopRounds(plan);
   if (plan.currentRound >= total) {
     finishPlan(session, plan);
@@ -186,7 +186,7 @@ export async function poll() {
   }
 }
 
-export function followCreatedPane() {
+function followCreatedPane() {
   const follow = store.followPane;
   if (!follow) return;
   if (Date.now() > follow.until) {
@@ -205,7 +205,7 @@ export function followCreatedPane() {
   }
 }
 
-export async function maybeUnstickStalled() {
+async function maybeUnstickStalled() {
   const now = Date.now();
   const live = new Set(store.sessions.map((s) => s.id));
   for (const id of [...store.stallWatch.keys()]) {
@@ -251,7 +251,7 @@ export async function maybeUnstickStalled() {
   }
 }
 
-export function completeRunning(session: AgentSession, plan: Plan, running: TaskItem) {
+function completeRunning(session: AgentSession, plan: Plan, running: TaskItem) {
   running.status = "done";
   plan.phase = "idle";
   plan.idleSince = Date.now();
@@ -261,14 +261,14 @@ export function completeRunning(session: AgentSession, plan: Plan, running: Task
   if (session.id === store.selectedId) refreshSelectedPlan();
 }
 
-export async function startCommit(session: AgentSession, plan: Plan, task: TaskItem) {
+async function startCommit(session: AgentSession, plan: Plan, task: TaskItem) {
   task.status = "committing";
   log(`${sessionLabel(session)} 开始提交：${task.title}`);
   if (session.id === store.selectedId) refreshSelectedPlan();
   await sendNow(session, plan, commitPrompt(task), false);
 }
 
-export async function startCompact(session: AgentSession, plan: Plan) {
+async function startCompact(session: AgentSession, plan: Plan) {
   plan.compacting = true;
   plan.compactFrom = parseContextPercent(session.preview);
   plan.needCompact = false;
@@ -276,7 +276,7 @@ export async function startCompact(session: AgentSession, plan: Plan) {
   await sendNow(session, plan, compactCommand(session.agent), false);
 }
 
-export async function tickPlan(session: AgentSession, plan: Plan) {
+async function tickPlan(session: AgentSession, plan: Plan) {
   const now = Date.now();
   const stableMs = Math.max(1, plan.idleMs || 2) * 1000;
   const ctx = parseContextPercent(session.preview);
@@ -395,7 +395,7 @@ export async function tickPlan(session: AgentSession, plan: Plan) {
   }
 }
 
-export async function maybeAutoSend() {
+async function maybeAutoSend() {
   for (const session of store.sessions) {
     const plan = store.plans.get(session.id);
     if (!plan?.planRunning) continue;

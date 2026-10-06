@@ -102,6 +102,7 @@ pub fn asset_matches(name: &str, platform: &str) -> bool {
         }
         "windows-x64" => n.ends_with(".exe") && (n.contains("setup") || n.contains("nsis")),
         "linux" => n.ends_with(".appimage") || n.ends_with(".deb"),
+        "android" => n.ends_with(".apk"),
         _ => false,
     }
 }
@@ -193,7 +194,7 @@ fn fetch_latest_release() -> Result<Option<GithubRelease>, String> {
     serde_json::from_str(&text).map(Some).map_err(|e| format!("解析 GitHub Release JSON 失败: {e}"))
 }
 
-pub fn check_update(_force: bool) -> Result<UpdateCheck, String> {
+pub fn check_update() -> Result<UpdateCheck, String> {
     match fetch_latest_release()? {
         None => Ok(empty_check()),
         Some(rel) => Ok(from_release(&rel, current_platform())),
@@ -304,7 +305,7 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
 }
 
 pub fn install_update() -> Result<String, String> {
-    let info = check_update(true)?;
+    let info = check_update()?;
     if !info.available {
         return Err("当前已是最新版本".into());
     }
@@ -325,7 +326,7 @@ pub fn install_update() -> Result<String, String> {
 pub fn open_release(url: Option<String>) -> Result<(), String> {
     let target = match url {
         Some(u) if !u.trim().is_empty() => u,
-        _ => check_update(false)?.html_url,
+        _ => check_update()?.html_url,
     };
     open_url(&target)
 }
@@ -358,6 +359,7 @@ mod tests {
             asset("pi-auto_0.2.0_aarch64.dmg"),
             asset("pi-auto_0.2.0_x64.dmg"),
             asset("pi-auto_0.2.0_x64-setup.exe"),
+            asset("herdr-plus-remote.apk"),
         ];
         assert_eq!(
             pick_asset(&ascii, "macos-arm64").unwrap().name,
@@ -371,13 +373,17 @@ mod tests {
             pick_asset(&ascii, "windows-x64").unwrap().name,
             "pi-auto_0.2.0_x64-setup.exe"
         );
+        assert_eq!(
+            pick_asset(&ascii, "android").unwrap().name,
+            "herdr-plus-remote.apk"
+        );
     }
 
     #[test]
     fn from_release_marks_newer_and_skips_draft() {
         let rel = GithubRelease {
             tag_name: "v9.9.9".into(),
-            name: "终端自动应答 v9.9.9".into(),
+            name: "herdr+ v9.9.9".into(),
             body: "修复循环".into(),
             html_url: "https://github.com/uasier/pi-auto/releases/tag/v9.9.9".into(),
             draft: false,
@@ -415,5 +421,34 @@ mod tests {
         assert!(safe_file_name("pi-auto_0.1.0_aarch64.dmg").is_ok());
         assert!(safe_file_name("../evil.exe").is_err());
         assert!(safe_file_name("").is_err());
+        assert!(safe_file_name("a/b.dmg").is_err());
+    }
+
+    #[test]
+    fn prerelease_and_wrong_asset_are_not_offered() {
+        let rel = GithubRelease {
+            tag_name: "v9.9.9".into(),
+            name: "  ".into(),
+            body: "  说明  ".into(),
+            html_url: "  ".into(),
+            draft: false,
+            prerelease: true,
+            assets: vec![
+                asset("pi-auto_9.9.9_aarch64.dmg"),
+                asset("pi-auto_9.9.9_amd64.deb"),
+            ],
+        };
+        let pre = from_release(&rel, "linux");
+        assert!(!pre.available);
+        assert_eq!(pre.name, "v9.9.9");
+        assert_eq!(pre.notes, "说明");
+        assert!(pre.html_url.contains("releases/tag/v9.9.9"));
+        assert_eq!(pre.asset_name, "pi-auto_9.9.9_amd64.deb");
+
+        let mut stable = rel;
+        stable.prerelease = false;
+        let mac = from_release(&stable, "macos-x64");
+        assert!(mac.available);
+        assert!(mac.asset_name.is_empty());
     }
 }

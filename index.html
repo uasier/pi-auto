@@ -5,7 +5,7 @@
     <link rel="stylesheet" href="/src/styles.css" />
     <link rel="icon" href="/src/assets/app-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>终端自动应答</title>
+    <title>herdr+</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
@@ -16,7 +16,7 @@
             <img src="/src/assets/app-icon.png" class="brand-icon" alt="" />
           </div>
           <div>
-            <h1>自动应答</h1>
+            <h1>herdr+</h1>
           </div>
         </header>
         <div class="rail-head">
@@ -54,6 +54,7 @@
               <span class="pill-dot"></span>
               <span id="status-text">待选择</span>
             </div>
+            <button type="button" id="channel-btn" class="ghost">通道</button>
             <button type="button" id="toggle-rail" class="ghost">会话</button>
             <button type="button" id="toggle-plan" class="ghost">计划 <span id="queue-count" class="count-badge">0</span></button>
             <span id="debug-flag" class="debug-flag hidden">DEBUG</span>
@@ -244,6 +245,59 @@
         </div>
       </div>
     </div>
+    <div id="channel-modal" class="guide hidden" role="dialog" aria-labelledby="channel-title">
+      <div class="guide-card keys-card">
+        <h2 id="channel-title">通道</h2>
+        <p class="guide-lead">不登录只在本机用。登录后，这台 Mac 会出现在同一账号的网页和手机里。</p>
+        <section class="keys-block">
+          <div class="keys-title"><strong id="github-user">未登录</strong></div>
+          <p id="github-code" class="key-note"></p>
+          <div class="guide-actions">
+            <button type="button" id="github-login" class="primary">登录并上线</button>
+            <button type="button" id="github-logout" class="ghost hidden">下线</button>
+          </div>
+        </section>
+        <details class="keys-block">
+          <summary>高级</summary>
+        <section class="keys-block">
+          <label class="shortcut-row"><input id="channel-enabled" type="checkbox" /> 转发到服务器</label>
+          <label>服务器
+            <input id="channel-url" spellcheck="false" autocomplete="off" placeholder="wss://154.36.168.192:8443/v1/ws" />
+          </label>
+          <label>主机钥匙
+            <span class="key-line">
+              <input id="channel-token" type="password" spellcheck="false" autocomplete="off" />
+              <button type="button" id="channel-reveal" class="ghost">显示</button>
+            </span>
+          </label>
+          <label>证书指纹
+            <input id="channel-pin" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="shortcut-row"><input id="channel-input" type="checkbox" /> 允许远程输入</label>
+          <p id="channel-note" class="key-note"></p>
+        </section>
+        <section class="keys-block">
+          <div class="keys-title"><strong>手机浏览器</strong></div>
+          <span class="key-line">
+            <input id="channel-page" readonly spellcheck="false" />
+            <button type="button" id="channel-copy" class="ghost">复制</button>
+          </span>
+          <p class="key-note">打开后用同一个 GitHub 账号登录。第一次会提示证书不受信任，点高级后继续。</p>
+        </section>
+        <section class="keys-block">
+          <div class="keys-title"><strong>APK</strong></div>
+          <span class="key-line">
+            <input id="channel-apk" readonly spellcheck="false" />
+            <button type="button" id="channel-copy-apk" class="ghost">复制</button>
+          </span>
+        </section>
+        </details>
+        <div class="guide-actions">
+          <button type="button" id="channel-save">保存高级设置</button>
+          <button type="button" id="channel-close">关闭</button>
+        </div>
+      </div>
+    </div>
     <div id="keys-modal" class="guide hidden" role="dialog" aria-labelledby="keys-title">
       <div class="guide-card keys-card">
         <h2 id="keys-title">密钥设置</h2>
@@ -313,6 +367,41 @@
           <button type="button" id="keys-check-all">全部检查</button>
           <button type="button" id="keys-save" class="primary">保存</button>
           <button type="button" id="keys-close">关闭</button>
+        </div>
+      </div>
+    </div>
+    <div id="shortcuts-modal" class="guide hidden" role="dialog" aria-labelledby="shortcuts-title">
+      <div class="guide-card keys-card">
+        <h2 id="shortcuts-title">快捷键</h2>
+        <p class="guide-lead">关掉后，对应按键和「优化对话」菜单都不再触发。下面几项由各自菜单固定提供。</p>
+        <section class="keys-block shortcut-row">
+          <label><input id="shortcut-tab" type="checkbox" /> 双击 Tab</label>
+          <span>补全输入。单独 Tab 仍送进终端。</span>
+        </section>
+        <section class="keys-block shortcut-row">
+          <label><input id="shortcut-shift" type="checkbox" /> 双击 Shift</label>
+          <span>把预置文本追加到终端输入，不发送。</span>
+        </section>
+        <section class="keys-block shortcut-row">
+          <label><input id="shortcut-refine" type="checkbox" /> ⌘⇧O</label>
+          <span>用 DeepSeek 改写当前终端输入。</span>
+        </section>
+        <section class="keys-block">
+          <div class="keys-title"><strong>预置文本</strong></div>
+          <label>供双击 Shift 追加
+            <textarea id="preset-text" rows="3" placeholder="例如：请只改相关文件，不要扩大范围"></textarea>
+          </label>
+        </section>
+        <section class="keys-block shortcut-fixed">
+          <div><b>⌘,</b> 密钥设置</div>
+          <div><b>⌘N</b> 新建窗口</div>
+          <div><b>⌘W</b> 关闭窗口</div>
+          <div><b>⌘/</b> 使用说明</div>
+        </section>
+        <p id="shortcuts-foot" class="key-note"></p>
+        <div class="guide-actions">
+          <button type="button" id="shortcuts-save" class="primary">保存</button>
+          <button type="button" id="shortcuts-close">关闭</button>
         </div>
       </div>
     </div>

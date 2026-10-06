@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0d11" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src *;" />
+    <title>herdr+ 远程</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <div id="update-banner" class="update-banner hidden">
+        <span id="update-banner-text">发现新版本</span>
+        <button type="button" id="update-banner-open">查看</button>
+        <button type="button" id="update-banner-skip">稍后</button>
+      </div>
+      <header class="top">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <strong>herdr+</strong>
+            <em>远程</em>
+          </div>
+        </div>
+        <button type="button" id="status-pill" class="status-pill" data-state="off">
+          <i id="status-dot"></i>
+          <span id="status">未连接</span>
+        </button>
+        <div class="top-actions">
+          <button type="button" id="mac-back" class="chip hidden"><i></i><span>设备</span></button>
+          <button type="button" id="settings-btn" class="chip"><i>?</i><span>登录</span></button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="rail">
+          <div class="sheet-handle" aria-hidden="true"></div>
+          <div class="rail-head">
+            <span>会话 <em id="session-count">0</em></span>
+            <button type="button" id="rail-close" class="ghost">关闭</button>
+          </div>
+          <div class="filters" role="tablist">
+            <button type="button" data-filter="all" class="on">全部</button>
+            <button type="button" data-filter="working">执行中</button>
+            <button type="button" data-filter="idle">空闲</button>
+            <button type="button" data-filter="blocked">等待</button>
+          </div>
+          <div id="sessions" class="sessions"></div>
+        </aside>
+
+        <main class="stage">
+          <div class="stage-head">
+            <div class="stage-copy">
+              <div class="kicker" id="pane-kicker">未选择</div>
+              <h1 id="pane-title">选择一个会话</h1>
+              <p id="pane-meta"></p>
+            </div>
+            <span class="state-pill" id="pane-state" data-state="unknown">待选择</span>
+          </div>
+          <div class="phone-session">
+            <i id="phone-dot" data-state="unknown"></i>
+            <span>
+              <b id="phone-title">选择会话</b>
+              <em id="phone-sub">当前会话</em>
+            </span>
+            <em id="phone-status" class="phone-status">未连接</em>
+            <button type="button" class="switch" id="phone-switch">切换</button>
+          </div>
+          <div class="term-frame">
+            <div class="term-bar">
+              <span class="live-mark" id="live-mark">画面</span>
+              <span id="term-project"></span>
+            </div>
+            <div id="term"><div id="term-scale"></div></div>
+            <div id="term-empty" class="term-empty">
+              <strong>还没有画面</strong>
+              <p>选一个会话后，直接在画面里输入。</p>
+              <button type="button" id="pick-session" class="primary">选择会话</button>
+            </div>
+          </div>
+        </main>
+      </div>
+      <button type="button" id="session-backdrop" class="session-backdrop" aria-label="关闭会话"></button>
+      <nav class="phone-nav" aria-label="主导航">
+        <button type="button" id="nav-sessions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>会话</span></button>
+        <button type="button" id="nav-device"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M8 19h8"/></svg><span>设备</span></button>
+        <button type="button" id="nav-account"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3"/><path d="M5 19c1.4-3 3.8-4.5 7-4.5S17.6 16 19 19"/></svg><span>账号</span></button>
+      </nav>
+    </div>
+
+    <div id="picker" class="overlay" role="dialog" aria-labelledby="picker-title">
+      <div class="sheet picker-sheet" id="picker-sheet" data-state="devices">
+        <div class="sheet-head">
+          <div>
+            <h2 id="picker-title">选择 Mac</h2>
+            <p id="picker-lead">点一台 Mac 进入对话</p>
+          </div>
+        </div>
+        <div id="mac-list" class="mac-list"></div>
+      </div>
+    </div>
+    <div id="settings" class="overlay hidden" role="dialog" aria-labelledby="settings-title">
+      <form class="sheet" id="settings-form">
+        <div class="sheet-head">
+          <div class="identity">
+            <span class="avatar" id="account-avatar">?</span>
+            <div>
+              <h2 id="settings-title">登录</h2>
+              <p id="account-line">未登录</p>
+            </div>
+          </div>
+          <button type="button" id="settings-close" class="ghost">关闭</button>
+        </div>
+        <div class="row sheet-actions">
+          <button type="button" id="account-login" class="primary">登录</button>
+          <button type="button" id="account-logout" class="ghost hidden">退出</button>
+        </div>
+        <p id="github-code" class="hint"></p>
+        <section class="update-box">
+          <div class="row">
+            <strong id="app-version">版本</strong>
+            <span id="update-status" class="hint"></span>
+          </div>
+          <p id="update-notes" class="hint hidden"></p>
+          <div class="row">
+            <button type="button" id="check-update">检查更新</button>
+            <button type="button" id="install-update" class="primary hidden">下载安装</button>
+            <button type="button" id="open-release" class="ghost">发布页</button>
+          </div>
+        </section>
+        <details>
+          <summary>通知和高级</summary>
+        <label>服务器
+          <input id="server-url" spellcheck="false" autocomplete="off" />
+        </label>
+        <label>证书指纹
+          <input id="pin" spellcheck="false" autocomplete="off" />
+        </label>
+        <div class="row">
+          <button type="button" id="notify-btn">开启通知</button>
+          <button type="button" id="keepalive-btn" class="hidden">允许后台</button>
+        </div>
+        <p id="notify-state" class="hint"></p>
+        </details>
+      </form>
+    </div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <script src="vendor/xterm.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -3,7 +3,8 @@ import type { AgentSession } from "./types";
 import { $, escapeHtml, sessionLabel, shortPath } from "./dom";
 import { log } from "./log";
 import { commitAfterInput, jevOnInput, providerLabel } from "./fields";
-import { activePlan, applyPlanInputsToUi, counts, currentTask, loopRounds, makeTask, parseContextPercent, poll, snapshotTemplate, syncPlanInputsFromUi, taskTitle } from "./plan";
+import { activePlan, applyPlanInputsToUi, counts, currentTask, loopRounds, makeTask, parseContextPercent, snapshotTemplate, syncPlanInputsFromUi, taskTitle } from "./plan";
+import { poll } from "./plan-run";
 import { hideIdleGame, showIdleGame } from "./idle-game";
 import { attachSessionTerm, hideTerm, stopLiveTerm } from "./terminal";
 
@@ -21,7 +22,6 @@ export function setAppTheme(agent?: string) {
   const app = $("app");
   if (agent) app.dataset.agent = agent;
   else delete app.dataset.agent;
-  app.classList.toggle("is-auto", !!activePlan()?.planRunning);
   const color =
     agent === "pi"
       ? "#b794f6"
@@ -33,7 +33,7 @@ export function setAppTheme(agent?: string) {
   app.style.setProperty("--agent", color);
 }
 
-export function statusLabel(session: AgentSession | undefined) {
+function statusLabel(session: AgentSession | undefined) {
   if (!session) return { text: "待选择", cls: "idle-unknown" };
   if (!session.idle) return { text: "执行中", cls: "idle-no" };
   if (session.confidence === "high") return { text: "空闲", cls: "idle-yes" };
@@ -83,7 +83,7 @@ export function renderLoopStatus() {
   syncExecPanels();
 }
 
-export function setRunState(id: string, text: string, cls: "off" | "on" | "busy") {
+function setRunState(id: string, text: string, cls: "off" | "on" | "busy") {
   const el = $(id);
   el.textContent = text;
   el.className = `run-state ${cls}`;
@@ -109,7 +109,7 @@ export function syncExecPanels() {
   else setRunState("commit-run-state", "任务和续跑结束后提交", "on");
 }
 
-export function groupedSessions() {
+function groupedSessions() {
   const grouped = new Map<string, AgentSession[]>();
   for (const key of AGENT_ORDER) grouped.set(key, []);
   for (const session of store.sessions) {
@@ -121,7 +121,7 @@ export function groupedSessions() {
   return grouped;
 }
 
-export function listSig() {
+function listSig() {
   return (
     `${store.activeSheet}|${store.selectedId}|` +
     store.sessions
@@ -133,7 +133,7 @@ export function listSig() {
   );
 }
 
-export function queueSig() {
+function queueSig() {
   const plan = activePlan();
   if (!plan) return `${store.selectedId}|empty`;
   return `${store.selectedId}|${plan.currentRound}|${plan.planRunning}|` + plan.tasks.map((t) => `${t.id}:${t.status}:${t.commit}`).join(";");
@@ -372,7 +372,7 @@ export function renderMain() {
   }
 }
 
-export function renderAll() {
+function renderAll() {
   renderList();
   renderMain();
   renderQueue();

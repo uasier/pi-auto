@@ -4,14 +4,9 @@ import { keyStorage, providerBase } from "./keys";
 import { play, type DinoObstacle } from "./idle-state";
 import { dinoUsesLaya, idleGame } from "./idle-game";
 import { syncStartButton } from "./snake";
+import type { JevDecision } from "./types";
 
 type DinoAction = "run" | "jump" | "duck";
-type JevDecision = {
-  choice: string;
-  confidence: number;
-  continueNow: number;
-  endpoint?: string | null;
-};
 
 
 const DINO_W = 480;
@@ -20,7 +15,7 @@ const DINO_GROUND = 118;
 const DINO_BEST_KEY = "pi-auto-dino-best";
 const DINO_ASK = "恐龙正在实时跑动，不会停。请综合跳跃高度、地面柱子和头顶上挡，选择现在不会撞上的动作。跳能越过柱子，但可能撞上挡；蹲能躲开低处上挡，但过不了柱子；跑保持当前姿态。多个都能过时，优先跑，其次蹲，最后跳。";
 
-export function logDino(detail: string) {
+function logDino(detail: string) {
   const box = $("idle-dino-log-list");
   const item = document.createElement("div");
   item.className = "idle-log-item";
@@ -30,7 +25,7 @@ export function logDino(detail: string) {
   while (box.childElementCount > 40) box.removeChild(box.lastElementChild as Node);
 }
 
-export function dinoBox() {
+function dinoBox() {
   if (play.dinoDuck && play.dinoY < 2) return { x: 24, y: DINO_GROUND - 16, w: 38, h: 14 };
   return { x: 28, y: DINO_GROUND - 34 - play.dinoY, w: 20, h: 32 };
 }
@@ -66,7 +61,7 @@ export function stopDino() {
   }
 }
 
-export function rememberDinoScore() {
+function rememberDinoScore() {
   const score = Math.floor(play.dinoScore);
   if (score > play.dinoBest) {
     play.dinoBest = score;
@@ -78,7 +73,7 @@ export function rememberDinoScore() {
   $("idle-dino-best").textContent = String(play.dinoBest);
 }
 
-export function spawnDinoObstacle() {
+function spawnDinoObstacle() {
   const bird = play.dinoScore > 280 && Math.random() < 0.16;
   if (bird) {
     const low = Math.random() < 0.7;
@@ -89,12 +84,12 @@ export function spawnDinoObstacle() {
   play.dinoObstacles.push({ x: DINO_W + 20, w: 12, h, y: DINO_GROUND - h, bird: false });
 }
 
-export function dinoHits(obstacle: DinoObstacle) {
+function dinoHits(obstacle: DinoObstacle) {
   const box = dinoBox();
   return box.x < obstacle.x + obstacle.w - 6 && box.x + box.w > obstacle.x + 6 && box.y < obstacle.y + obstacle.h - 6 && box.y + box.h > obstacle.y + 6;
 }
 
-export function drawDinoGround(ctx: CanvasRenderingContext2D) {
+function drawDinoGround(ctx: CanvasRenderingContext2D) {
   const scroll = Math.floor(play.dinoScore * 14);
   ctx.strokeStyle = "#2a303a";
   ctx.beginPath();
@@ -108,7 +103,7 @@ export function drawDinoGround(ctx: CanvasRenderingContext2D) {
   }
 }
 
-export function drawDinoTree(ctx: CanvasRenderingContext2D, obstacle: DinoObstacle) {
+function drawDinoTree(ctx: CanvasRenderingContext2D, obstacle: DinoObstacle) {
   const x = obstacle.x;
   const y = obstacle.y;
   const w = obstacle.w;
@@ -125,7 +120,7 @@ export function drawDinoTree(ctx: CanvasRenderingContext2D, obstacle: DinoObstac
   ctx.fillRect(x + 2, y + 2, Math.max(2, w - 8), 3);
 }
 
-export function drawDinoBird(ctx: CanvasRenderingContext2D, obstacle: DinoObstacle) {
+function drawDinoBird(ctx: CanvasRenderingContext2D, obstacle: DinoObstacle) {
   const x = obstacle.x;
   const y = obstacle.y;
   const flap = Math.floor(play.dinoLeg + obstacle.x / 12) % 2 === 0;
@@ -144,7 +139,7 @@ export function drawDinoBird(ctx: CanvasRenderingContext2D, obstacle: DinoObstac
   ctx.fillRect(x + 17, y + 4, 1, 1);
 }
 
-export function drawDinoRunner(ctx: CanvasRenderingContext2D) {
+function drawDinoRunner(ctx: CanvasRenderingContext2D) {
   const box = dinoBox();
   const ducking = play.dinoDuck && play.dinoY < 2;
   const step = Math.floor(play.dinoLeg) % 2 === 0;
@@ -202,27 +197,27 @@ export function drawDino() {
       : `最高 ${play.dinoBest} · 空格开始`;
 }
 
-export function dinoDist(obstacle: DinoObstacle) {
+function dinoDist(obstacle: DinoObstacle) {
   return obstacle.x - (dinoBox().x + dinoBox().w);
 }
 
-export function poseAt(y: number, duck: boolean) {
+function poseAt(y: number, duck: boolean) {
   if (duck && y < 2) return { x: 24, y: DINO_GROUND - 16, w: 38, h: 14 };
   return { x: 28, y: DINO_GROUND - 34 - y, w: 20, h: 32 };
 }
 
-export function band(obstacle: DinoObstacle) {
+function band(obstacle: DinoObstacle) {
   const bottom = Math.round(DINO_GROUND - (obstacle.y + obstacle.h));
   const top = Math.round(DINO_GROUND - obstacle.y);
   return { bottom, top };
 }
 
-export function obstacleName(obstacle: DinoObstacle) {
+function obstacleName(obstacle: DinoObstacle) {
   if (!obstacle.bird) return "柱子";
   return obstacle.y >= DINO_GROUND - 30 ? "低处上挡" : "高处上挡";
 }
 
-export function foresee(action: DinoAction) {
+function foresee(action: DinoAction) {
   let y = play.dinoY;
   let vy = play.dinoVy;
   let duck = action === "duck" ? y < 2 : action === "run" && y < 2 ? false : play.dinoDuck && action !== "jump";
@@ -247,7 +242,7 @@ export function foresee(action: DinoAction) {
   return { ok: true, hit: "" };
 }
 
-export function dinoScene() {
+function dinoScene() {
   const jumpPeak = Math.round((7.4 * 7.4) / (2 * 0.34));
   const ahead = play.dinoObstacles
     .filter((item) => dinoDist(item) > -8)
@@ -264,23 +259,23 @@ export function dinoScene() {
   ].join("\n");
 }
 
-export function dinoActions(): DinoAction[] {
+function dinoActions(): DinoAction[] {
   return play.dinoY >= 2 ? ["run"] : ["run", "jump", "duck"];
 }
 
-export function nearestThreat() {
+function nearestThreat() {
   return play.dinoObstacles
     .filter((item) => dinoDist(item) > -24)
     .sort((a, b) => a.x - b.x)[0];
 }
 
-export function dinoNeedsDecision() {
+function dinoNeedsDecision() {
   const next = nearestThreat();
   if (!next) return false;
   return dinoDist(next) <= 260 || play.dinoY >= 2 || play.dinoDuck;
 }
 
-export function dinoChoices() {
+function dinoChoices() {
   const actions = dinoActions();
   const label: Record<DinoAction, string> = { run: "继续跑", jump: "现在起跳", duck: "现在蹲下" };
   return actions.map((id) => {
@@ -292,7 +287,7 @@ export function dinoChoices() {
   });
 }
 
-export function applyDinoAction(id: DinoAction) {
+function applyDinoAction(id: DinoAction) {
   if (id === "jump") {
     if (play.dinoY >= 2) return;
     play.dinoDuck = false;
@@ -302,18 +297,18 @@ export function applyDinoAction(id: DinoAction) {
   if (play.dinoY < 2) play.dinoDuck = id === "duck";
 }
 
-export function releaseDinoDuck() {
+function releaseDinoDuck() {
   if (!play.dinoDuck || !dinoUsesLaya()) return;
   const box = dinoBox();
   const blocking = play.dinoObstacles.some((item) => item.bird && item.y >= DINO_GROUND - 30 && item.x + item.w > box.x - 8);
   if (!blocking) play.dinoDuck = false;
 }
 
-export function liveChoiceFits(id: DinoAction) {
+function liveChoiceFits(id: DinoAction) {
   return foresee(id).ok;
 }
 
-export function continueDinoAsk(epoch: number, delay = 30) {
+function continueDinoAsk(epoch: number, delay = 30) {
   play.dinoAsking = false;
   if (epoch !== play.dinoEpoch || !play.dinoRunning || play.dinoOver || !dinoUsesLaya()) return;
   if (!dinoNeedsDecision()) return;
@@ -321,7 +316,7 @@ export function continueDinoAsk(epoch: number, delay = 30) {
   window.setTimeout(() => void dinoTurn(epoch), delay);
 }
 
-export async function dinoTurn(epoch: number) {
+async function dinoTurn(epoch: number) {
   if (epoch !== play.dinoEpoch || !play.dinoRunning || play.dinoOver || !dinoUsesLaya() || !dinoNeedsDecision()) {
     play.dinoAsking = false;
     return;
@@ -381,14 +376,14 @@ export async function dinoTurn(epoch: number) {
   continueDinoAsk(epoch);
 }
 
-export function queueDinoTurn() {
+function queueDinoTurn() {
   if (!play.dinoRunning || play.dinoOver || !dinoUsesLaya() || play.snakeAiBusy || play.dinoAsking || !dinoNeedsDecision()) return;
   play.dinoAsking = true;
   const epoch = play.dinoEpoch;
   window.setTimeout(() => void dinoTurn(epoch), 30);
 }
 
-export function stepDino(now: number) {
+function stepDino(now: number) {
   if (!play.dinoRunning || play.dinoOver || idleGame() !== "dino") return;
   play.dinoRaf = null;
   releaseDinoDuck();
@@ -434,7 +429,7 @@ export function beginDino() {
   if (dinoUsesLaya()) queueDinoTurn();
 }
 
-export function dinoJump() {
+function dinoJump() {
   if (!play.dinoRunning || play.dinoOver || play.dinoY > 0 || (play.dinoDuck && play.dinoY < 2)) return;
   play.dinoVy = -7.4;
 }

@@ -2,7 +2,8 @@ import { store } from "./store";
 import type { AgentSession, JevDecision, Plan, TaskItem } from "./types";
 import { sessionLabel } from "./dom";
 import { log } from "./log";
-import { commitAfterInput, compactAtInput, idleMsInput, jevMaxInput, jevOnInput, jevProvider, loopRoundsInput, providerBase, providerKey, providerLabel } from "./fields";
+import { commitAfterInput, compactAtInput, idleMsInput, jevMaxInput, jevOnInput, jevProvider, loopRoundsInput, providerKey, providerLabel } from "./fields";
+import { providerBase } from "./keys";
 import { refreshSelectedPlan } from "./view";
 import { invoke } from "@tauri-apps/api/core";
 import { sendNow } from "./plan-run";
@@ -31,7 +32,7 @@ const JEV_ASK = `【下一步建议】完成上面的工作后，在回复最末
 
 每条一行，写具体要改的文件或要验证的行为。不要重复已经做完的事。如果没有值得继续的下一步，代码块里只写「无」。`;
 
-export function emptyPlan(): Plan {
+function emptyPlan(): Plan {
   return {
     tasks: [],
     template: [],
@@ -53,7 +54,7 @@ export function emptyPlan(): Plan {
   };
 }
 
-export function getPlan(id: string): Plan {
+function getPlan(id: string): Plan {
   let plan = store.plans.get(id);
   if (!plan) {
     plan = emptyPlan();
@@ -89,7 +90,7 @@ export function applyPlanInputsToUi() {
 }
 
 
-export function stripAnsi(text: string) {
+function stripAnsi(text: string) {
   return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1b./g, "");
 }
 
@@ -134,7 +135,7 @@ export function clearStallWatch(id: string | null) {
   store.stallNudging.delete(id);
 }
 
-export function stallPreviewIds(now = Date.now()) {
+function stallPreviewIds(now = Date.now()) {
   const ids: string[] = [];
   for (const [id, plan] of store.plans) {
     if (!plan.planRunning) continue;
@@ -152,7 +153,7 @@ export function pollPreviewIds(now = Date.now()) {
   return [...ids];
 }
 
-export function compactDoneText(preview: string) {
+function compactDoneText(preview: string) {
   const tail = stripAnsi(preview).replace(/\r/g, "").slice(-4000);
   return /compacted|compact(?:ion)? complete|conversation compacted|context compacted|已压缩|压缩完成|compact summary/i.test(tail);
 }
@@ -226,7 +227,7 @@ export function withJevAsk(text: string, enabled: boolean) {
   return `${text.trim()}\n\n${JEV_ASK}`;
 }
 
-export function suggestionLines(body: string) {
+function suggestionLines(body: string) {
   return body
     .split(/\n/)
     .map((line) => line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").trim())
@@ -236,7 +237,7 @@ export function suggestionLines(body: string) {
     .slice(0, 4);
 }
 
-export function parseJevSuggestions(raw: string) {
+function parseJevSuggestions(raw: string) {
   const text = stripAnsi(raw).replace(/\r/g, "");
   const fences = [...text.matchAll(/```(?:jev-next|next)\s*([\s\S]*?)```/gi)];
   const fenced = fences.length ? fences[fences.length - 1][1] : "";
@@ -254,14 +255,14 @@ export function parseJevSuggestions(raw: string) {
   return suggestionLines(lines.slice(start + 1, start + 12).join("\n"));
 }
 
-export function continuationPrompt(step: string) {
+function continuationPrompt(step: string) {
   return withJevAsk(
     `Jev 已选定下一步。现在只做这一项，做完就停：\n\n${step}\n\n不要同时做其他建议，不要扩大范围。`,
     true,
   );
 }
 
-export function logLaya(scope: string, detail: string, err = false) {
+function logLaya(scope: string, detail: string, err = false) {
   log(`Laya · ${scope} · ${detail}`, err);
 }
 
@@ -380,18 +381,6 @@ export function currentTask(plan: Plan) {
     plan.tasks.find((t) => t.status === "pending")
   );
 }
-
-export {
-  followCreatedPane,
-  maybeAutoSend,
-  maybeUnstickStalled,
-  pauseLoop,
-  poll,
-  startLoop,
-  stopLoop,
-  tickPlan,
-} from "./plan-run";
-export { sendNow };
 
 export function parseTaskList(raw: string): string[] {
   const trimmed = raw.trim();

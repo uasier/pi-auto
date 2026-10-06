@@ -1,5 +1,5 @@
 import { $ } from "./dom";
-import { baseStorage, keyStorage, providerBase, type DecisionProvider } from "./keys";
+import { keyStorage, type DecisionProvider } from "./keys";
 
 export const JEV_PROVIDER_STORAGE = "pi-auto-jev-provider";
 
@@ -25,5 +25,3 @@ export function providerLabel(provider = jevProvider()) {
 export function providerKey(provider = jevProvider()) {
   return localStorage.getItem(keyStorage(provider))?.trim() || "";
 }
-
-export { providerBase, baseStorage, keyStorage };

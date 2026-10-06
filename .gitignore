@@ -14,6 +14,15 @@ dist-ssr
 src-tauri/target/
 release/
 *.dmg
+relay/deploy/*.pem
+relay/deploy/token
+relay/deploy/herdr-relay
+relay/deploy/channel.json
+remote-android/.gradle/
+remote-android/build/
+remote-android/app/build/
+remote-android/local.properties
+*.apk
 
 # Editor directories and files
 .vscode/*

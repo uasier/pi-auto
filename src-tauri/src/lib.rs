@@ -1,12 +1,14 @@
+mod channel;
 mod herdr;
 mod herdr_term;
 mod jev;
+mod theme;
 mod update;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 static WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -15,7 +17,7 @@ fn open_new_window(app: &AppHandle) -> Result<(), String> {
     let seq = WINDOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     let label = format!("win-{seq}");
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::default())
-        .title("终端自动应答")
+        .title("herdr+")
         .inner_size(1180.0, 800.0)
         .min_inner_size(880.0, 560.0);
     if let Some(current) = app
@@ -108,6 +110,10 @@ fn snapshot_sessions(preview_ids: &[String]) -> Result<Vec<AgentSession>, String
         });
     }
     Ok(sessions)
+}
+
+pub(crate) fn session_snapshot() -> Vec<AgentSession> {
+    snapshot_sessions(&[]).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -270,9 +276,8 @@ fn app_info() -> AppInfo {
 }
 
 #[tauri::command]
-async fn check_update(force: Option<bool>) -> Result<update::UpdateCheck, String> {
-    let force = force.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || update::check_update(force))
+async fn check_update() -> Result<update::UpdateCheck, String> {
+    tauri::async_runtime::spawn_blocking(update::check_update)
         .await
         .map_err(|e| format!("{e}"))?
 }
@@ -293,20 +298,43 @@ async fn install_update() -> Result<String, String> {
 
 fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     let ai_keys = MenuItem::with_id(app, "ai-keys", "密钥设置…", true, Some("CmdOrCtrl+,") )?;
+    let channel = MenuItem::with_id(app, "channel", "通道…", true, None::<&str>)?;
+    let current_theme = theme::list_themes().current;
+    let mut theme_items = Vec::new();
+    for item in theme::menu_themes() {
+        let label = if item.light {
+            format!("{} · 浅色", item.label)
+        } else {
+            item.label.to_string()
+        };
+        theme_items.push(CheckMenuItem::with_id(
+            app,
+            format!("theme:{}", item.id),
+            label,
+            true,
+            item.id == current_theme,
+            None::<&str>,
+        )?);
+    }
+    let theme_refs: Vec<&dyn IsMenuItem<_>> = theme_items.iter().map(|item| item as _).collect();
+    let theme_menu = Submenu::with_items(app, "主题", true, &theme_refs)?;
     let new_window = MenuItem::with_id(app, "new-window", "新建窗口", true, Some("CmdOrCtrl+N"))?;
     let close_window = PredefinedMenuItem::close_window(app, Some("关闭窗口"))?;
     let check_update = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
     let refine = MenuItem::with_id(app, "refine", "优化对话…", true, Some("CmdOrCtrl+Shift+O"))?;
     let usage = MenuItem::with_id(app, "usage", "使用说明", true, Some("CmdOrCtrl+/"))?;
+    let shortcuts = MenuItem::with_id(app, "shortcuts", "管理快捷键…", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
             &Submenu::with_items(
                 app,
-                "终端自动应答",
+                "herdr+",
                 true,
                 &[
                     &ai_keys,
+                    &channel,
+                    &theme_menu,
                     &PredefinedMenuItem::separator(app)?,
                     &check_update,
                     &PredefinedMenuItem::separator(app)?,
@@ -335,6 +363,7 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
                     &PredefinedMenuItem::select_all(app, Some("全选"))?,
                 ],
             )?,
+            &Submenu::with_items(app, "系统", true, &[&shortcuts])?,
             &Submenu::with_id_and_items(
                 app,
                 tauri::menu::HELP_SUBMENU_ID,
@@ -345,7 +374,25 @@ fn install_menu(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
     app.set_menu(menu)?;
-    app.on_menu_event(|app, event| {
+    app.on_menu_event(move |app, event| {
+        if let Some(name) = event.id().0.strip_prefix("theme:") {
+            match theme::set_theme(name.to_string()) {
+                Ok(chosen) => {
+                    for item in &theme_items {
+                        let _ = item.set_checked(item.id().0 == event.id().0);
+                    }
+                    for window in app.webview_windows().into_values() {
+                        let _ = window.emit("theme-changed", &chosen);
+                    }
+                }
+                Err(err) => {
+                    for window in app.webview_windows().into_values() {
+                        let _ = window.emit("theme-error", err.clone());
+                    }
+                }
+            }
+            return;
+        }
         if event.id().0 == "new-window" {
             let _ = open_new_window(app);
         }
@@ -370,6 +417,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             install_menu(app)?;
+            channel::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -403,6 +451,12 @@ pub fn run() {
             resize_window,
             create_terminal,
             is_debug,
+            theme::list_themes,
+            theme::set_theme,
+            channel::channel_status,
+            channel::channel_save,
+            channel::channel_github_start,
+            channel::channel_github_logout,
             refine_prompt,
             complete_prompt
         ])

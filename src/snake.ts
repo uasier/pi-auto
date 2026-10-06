@@ -4,19 +4,13 @@ import { JEV_KEY_STORAGE, LAYA_BASE_STORAGE, keyStorage, providerBase } from "./
 import { play, type Cell } from "./idle-state";
 import { dinoUsesLaya, idleGame, snakeDriver, syncDriverOptions } from "./idle-game";
 import { drawDino } from "./dino";
-
-type JevDecision = {
-  choice: string;
-  confidence: number;
-  continueNow: number;
-  endpoint?: string | null;
-};
+import type { JevDecision } from "./types";
 
 const SNAKE_GRID = 15;
 const SNAKE_CELL = 16;
 const SNAKE_SPEED = 180;
 
-export function placeSnakeFood() {
+function placeSnakeFood() {
   const used = new Set(play.snakeBody.map((cell) => `${cell.x},${cell.y}`));
   const open: Cell[] = [];
   for (let y = 0; y < SNAKE_GRID; y += 1) {
@@ -41,7 +35,7 @@ export function resetSnake() {
   drawSnake();
 }
 
-export function logSnake(detail: string, err = false) {
+function logSnake(detail: string, err = false) {
   const box = $("idle-game-log-list");
   const item = document.createElement("div");
   item.className = `idle-log-item${err ? " err" : ""}`;
@@ -51,7 +45,7 @@ export function logSnake(detail: string, err = false) {
   while (box.childElementCount > 80) box.removeChild(box.lastElementChild as Node);
 }
 
-export function drawSnake() {
+function drawSnake() {
   const canvas = $<HTMLCanvasElement>("idle-game");
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -115,11 +109,11 @@ const SNAKE_DIRS = [
   { id: "right" as const, name: "右", dir: { x: 1, y: 0 } },
 ];
 
-export function cellKey(cell: Cell) {
+function cellKey(cell: Cell) {
   return `${cell.x},${cell.y}`;
 }
 
-export function snakeChar(x: number, y: number) {
+function snakeChar(x: number, y: number) {
   if (x < 0 || y < 0 || x >= SNAKE_GRID || y >= SNAKE_GRID) return "#";
   if (x === play.snakeBody[0]?.x && y === play.snakeBody[0]?.y) return "H";
   const tail = play.snakeBody[play.snakeBody.length - 1];
@@ -129,7 +123,7 @@ export function snakeChar(x: number, y: number) {
   return ".";
 }
 
-export function drawSnakeFood(ctx: CanvasRenderingContext2D) {
+function drawSnakeFood(ctx: CanvasRenderingContext2D) {
   const x = play.snakeFood.x * SNAKE_CELL;
   const y = play.snakeFood.y * SNAKE_CELL;
   ctx.fillStyle = "#c98b86";
@@ -138,7 +132,7 @@ export function drawSnakeFood(ctx: CanvasRenderingContext2D) {
   ctx.fillRect(x + 3, y + 7, 10, 2);
 }
 
-export function drawSnakePart(ctx: CanvasRenderingContext2D, index: number) {
+function drawSnakePart(ctx: CanvasRenderingContext2D, index: number) {
   const cell = play.snakeBody[index];
   const x = cell.x * SNAKE_CELL;
   const y = cell.y * SNAKE_CELL;
@@ -159,20 +153,20 @@ export function drawSnakePart(ctx: CanvasRenderingContext2D, index: number) {
   ctx.fillRect(x + 7 + play.snakeDir.x * 3 - px * 2, y + 7 + play.snakeDir.y * 3 - py * 2, 2, 2);
 }
 
-export function dirName(dir: Cell) {
+function dirName(dir: Cell) {
   if (dir.x === 1) return "右";
   if (dir.x === -1) return "左";
   if (dir.y === 1) return "下";
   return "上";
 }
 
-export function foodSide(dx: number, dy: number) {
+function foodSide(dx: number, dy: number) {
   const horizontal = dx === 0 ? "" : dx > 0 ? `右 ${dx}` : `左 ${-dx}`;
   const vertical = dy === 0 ? "" : dy > 0 ? `下 ${dy}` : `上 ${-dy}`;
   return [horizontal, vertical].filter(Boolean).join("、") || "已重合";
 }
 
-export function boardMap() {
+function boardMap() {
   const rows: string[] = [];
   for (let y = 0; y < SNAKE_GRID; y += 1) {
     let line = "";
@@ -182,7 +176,7 @@ export function boardMap() {
   return rows.join("\n");
 }
 
-export function localMap() {
+function localMap() {
   const head = play.snakeBody[0];
   const rows: string[] = [];
   for (let dy = -2; dy <= 2; dy += 1) {
@@ -193,7 +187,7 @@ export function localMap() {
   return rows.join("\n");
 }
 
-export function clearAhead(dir: Cell) {
+function clearAhead(dir: Cell) {
   const blocked = new Set(play.snakeBody.map(cellKey));
   let count = 0;
   let x = play.snakeBody[0].x + dir.x;
@@ -206,7 +200,7 @@ export function clearAhead(dir: Cell) {
   return count;
 }
 
-export function spaceAfter(dir: Cell) {
+function spaceAfter(dir: Cell) {
   const head = play.snakeBody[0];
   const next = { x: head.x + dir.x, y: head.y + dir.y };
   const eats = next.x === play.snakeFood.x && next.y === play.snakeFood.y;
@@ -231,7 +225,7 @@ export function spaceAfter(dir: Cell) {
   return { space, length: body.length, traps: space < body.length };
 }
 
-export function snakeState(chasing: boolean, avoidedTrap: boolean) {
+function snakeState(chasing: boolean, avoidedTrap: boolean) {
   const head = play.snakeBody[0];
   const dx = play.snakeFood.x - head.x;
   const dy = play.snakeFood.y - head.y;
@@ -265,7 +259,7 @@ type SnakeMove = {
   traps: boolean;
 };
 
-export function candidateMoves(): SnakeMove[] {
+function candidateMoves(): SnakeMove[] {
   const head = play.snakeBody[0];
   const now = Math.abs(play.snakeFood.x - head.x) + Math.abs(play.snakeFood.y - head.y);
   return SNAKE_DIRS.filter((move) => move.dir.x !== -play.snakeDir.x || move.dir.y !== -play.snakeDir.y)
@@ -303,7 +297,7 @@ export function candidateMoves(): SnakeMove[] {
     }));
 }
 
-export function movesForDecision() {
+function movesForDecision() {
   const safe = candidateMoves();
   const open = safe.filter((move) => !move.traps);
   const pool = open.length > 0 ? open : safe;
@@ -317,7 +311,7 @@ export function movesForDecision() {
   };
 }
 
-export function describeMove(move: SnakeMove) {
+function describeMove(move: SnakeMove) {
   const head = play.snakeBody[0];
   const x = head.x + move.dir.x;
   const y = head.y + move.dir.y;
@@ -354,7 +348,7 @@ export function applyStep(dir: Cell) {
   drawSnake();
 }
 
-export async function aiTurn(epoch: number) {
+async function aiTurn(epoch: number) {
   const driver = snakeDriver();
   if (!play.snakeRunning || driver === "manual" || play.snakeOver || epoch !== play.snakeEpoch) return;
   if (play.snakeAiBusy) {
@@ -448,7 +442,7 @@ export async function refreshGameBackends() {
   }
 }
 
-export function stepSnake() {
+function stepSnake() {
   applyStep(play.snakeNext);
 }
 

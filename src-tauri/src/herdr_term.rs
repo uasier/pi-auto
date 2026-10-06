@@ -110,10 +110,65 @@ enum ServerMessage {
 struct Link {
     writer: UnixStream,
     generation: u64,
+    pane_id: String,
+}
+
+#[derive(Clone)]
+pub struct RelayFrame {
+    pub seq: u64,
+    pub pane_id: String,
+    pub generation: u64,
+    pub full: bool,
+    pub width: u16,
+    pub height: u16,
+    pub bytes: Vec<u8>,
 }
 
 static LINKS: LazyLock<Mutex<HashMap<String, Link>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static GENERATION: AtomicU64 = AtomicU64::new(1);
+static FRAME_SEQ: AtomicU64 = AtomicU64::new(1);
+static FRAME_TX: LazyLock<Mutex<Option<std::sync::mpsc::SyncSender<RelayFrame>>>> = LazyLock::new(|| Mutex::new(None));
+static RELAY_SUBS: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static CACHE: LazyLock<Mutex<HashMap<String, Vec<RelayFrame>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static ATTACH_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+pub fn set_frame_sender(tx: Option<std::sync::mpsc::SyncSender<RelayFrame>>) {
+    if let Ok(mut slot) = FRAME_TX.lock() {
+        *slot = tx;
+    }
+}
+
+fn publish_frame(mut frame: RelayFrame) {
+    if frame.seq == 0 {
+        frame.seq = FRAME_SEQ.fetch_add(1, Ordering::Relaxed);
+    }
+    if let Ok(mut cache) = CACHE.lock() {
+        let entry = cache.entry(frame.pane_id.clone()).or_default();
+        if frame.full {
+            entry.clear();
+        }
+        entry.push(frame.clone());
+        if entry.len() > 120 {
+            let full_at = entry.iter().rposition(|item| item.full).unwrap_or(0);
+            entry.drain(0..full_at);
+            if entry.len() > 120 {
+                entry.drain(1..entry.len() - 40);
+            }
+        }
+    }
+    let tx = FRAME_TX.lock().ok().and_then(|slot| slot.clone());
+    if let Some(tx) = tx {
+        let _ = tx.try_send(frame);
+    }
+}
+
+pub fn replay(pane_id: &str) -> Vec<RelayFrame> {
+    CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(pane_id).cloned())
+        .unwrap_or_default()
+}
 
 fn client_socket() -> Result<PathBuf, String> {
     let api = crate::herdr::discover_socket().ok_or("未找到 herdr.sock")?;
@@ -179,12 +234,24 @@ struct TermBytesEvent {
 #[tauri::command]
 pub fn term_attach(window: WebviewWindow, pane_id: String, cols: u16, rows: u16) -> Result<u64, String> {
     let label = window.label().to_string();
-    detach_label(&label);
     let pane_id = pane_id.trim().to_string();
     if pane_id.is_empty() {
         return Err("没有 pane".into());
     }
+    let _guard = ATTACH_LOCK.lock().map_err(|_| "终端锁失败".to_string())?;
+    release_label(&label, true);
+    release_pane(&pane_id);
     let (cols, rows) = clamp_size(cols, rows);
+    attach_locked(&label, &pane_id, cols, rows, Some(window.app_handle().clone()))
+}
+
+fn attach_locked(
+    label: &str,
+    pane_id: &str,
+    cols: u16,
+    rows: u16,
+    app: Option<AppHandle>,
+) -> Result<u64, String> {
     let mut stream = UnixStream::connect(client_socket()?).map_err(|err| format!("连接终端通道失败：{err}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(4)))
@@ -214,7 +281,7 @@ pub fn term_attach(window: WebviewWindow, pane_id: String, cols: u16, rows: u16)
     write_msg(
         &mut stream,
         &ClientMessage::ControlTerminal {
-            target: pane_id.clone(),
+            target: pane_id.to_string(),
             takeover: true,
         },
     )?;
@@ -224,16 +291,159 @@ pub fn term_attach(window: WebviewWindow, pane_id: String, cols: u16, rows: u16)
     {
         let mut links = LINKS.lock().map_err(|_| "终端锁失败".to_string())?;
         links.insert(
-            label.clone(),
+            label.to_string(),
             Link {
                 writer: stream,
                 generation,
+                pane_id: pane_id.to_string(),
             },
         );
     }
-    let app = window.app_handle().clone();
-    std::thread::spawn(move || read_loop(app, label, reader, generation));
+    let label = label.to_string();
+    let pane_id = pane_id.to_string();
+    std::thread::spawn(move || read_loop(app, label, pane_id, reader, generation));
     Ok(generation)
+}
+
+fn pane_attached(pane_id: &str) -> bool {
+    LINKS
+        .lock()
+        .ok()
+        .map(|links| links.values().any(|link| link.pane_id == pane_id))
+        .unwrap_or(false)
+}
+
+fn release_pane(pane_id: &str) {
+    let labels: Vec<String> = LINKS
+        .lock()
+        .ok()
+        .map(|links| {
+            links
+                .iter()
+                .filter(|(_, link)| link.pane_id == pane_id)
+                .map(|(label, _)| label.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    for label in labels {
+        release_label(&label, false);
+    }
+}
+
+fn release_label(label: &str, restore: bool) {
+    let removed = LINKS.lock().ok().and_then(|mut links| links.remove(label));
+    if let Some(mut current) = removed {
+        let pane = current.pane_id.clone();
+        let _ = write_msg(&mut current.writer, &ClientMessage::Detach);
+        let _ = current.writer.shutdown(std::net::Shutdown::Both);
+        if restore {
+            schedule_restore(&pane);
+        }
+    }
+}
+
+fn schedule_restore(pane_id: &str) {
+    let pane_id = pane_id.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let Ok(_guard) = ATTACH_LOCK.lock() else {
+            return;
+        };
+        let wanted = RELAY_SUBS.lock().ok().map(|subs| subs.contains_key(&pane_id)).unwrap_or(false);
+        if wanted && !pane_attached(&pane_id) {
+            let _ = attach_locked(&format!("relay:{pane_id}"), &pane_id, 100, 32, None);
+        }
+    });
+}
+
+pub fn relay_subscribe(pane_id: &str) -> Result<(), String> {
+    let pane_id = pane_id.trim();
+    if pane_id.is_empty() {
+        return Err("没有 pane".into());
+    }
+    if let Ok(mut subs) = RELAY_SUBS.lock() {
+        *subs.entry(pane_id.to_string()).or_insert(0) += 1;
+    }
+    let _guard = ATTACH_LOCK.lock().map_err(|_| "终端锁失败".to_string())?;
+    if pane_attached(pane_id) {
+        return Ok(());
+    }
+    attach_locked(&format!("relay:{pane_id}"), pane_id, 100, 32, None).map(|_| ())
+}
+
+pub fn relay_unsubscribe(pane_id: &str) {
+    let pane_id = pane_id.trim();
+    if pane_id.is_empty() {
+        return;
+    }
+    let left = RELAY_SUBS.lock().ok().and_then(|mut subs| {
+        let count = subs.get_mut(pane_id)?;
+        *count = count.saturating_sub(1);
+        let left = *count;
+        if left == 0 {
+            subs.remove(pane_id);
+        }
+        Some(left)
+    });
+    if left == Some(0) {
+        if let Ok(_guard) = ATTACH_LOCK.lock() {
+            release_label(&format!("relay:{pane_id}"), false);
+        }
+    }
+}
+
+pub fn maintain_relay() {
+    let Ok(_guard) = ATTACH_LOCK.try_lock() else {
+        return;
+    };
+    let panes: Vec<String> = RELAY_SUBS
+        .lock()
+        .ok()
+        .map(|subs| subs.keys().cloned().collect())
+        .unwrap_or_default();
+    for pane in panes {
+        if !pane_attached(&pane) {
+            let _ = attach_locked(&format!("relay:{pane}"), &pane, 100, 32, None);
+        }
+    }
+}
+
+pub fn write_input_pane(pane_id: &str, data: Vec<u8>) -> Result<(), String> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    with_pane(pane_id, |stream| write_msg(stream, &ClientMessage::Input { data }))
+}
+
+pub fn write_scroll_pane(pane_id: &str, direction: &str, lines: u16) -> Result<(), String> {
+    let direction = match direction.trim() {
+        "up" => AttachScrollDirection::Up,
+        "down" => AttachScrollDirection::Down,
+        _ => return Err("滚动方向无效".into()),
+    };
+    let lines = lines.clamp(1, 3);
+    with_pane(pane_id, |stream| {
+        write_msg(
+            stream,
+            &ClientMessage::AttachScroll {
+                source: AttachScrollSource::Wheel,
+                direction,
+                lines,
+                column: None,
+                row: None,
+                modifiers: 0,
+            },
+        )
+    })
+}
+
+fn with_pane(pane_id: &str, op: impl FnOnce(&mut UnixStream) -> Result<(), String>) -> Result<(), String> {
+    let mut links = LINKS.lock().map_err(|_| "终端锁失败".to_string())?;
+    let link = links
+        .values_mut()
+        .find(|link| link.pane_id == pane_id)
+        .ok_or("终端未接入")?;
+    op(&mut link.writer)
 }
 
 fn emit_to(app: &AppHandle, label: &str, event: &str, payload: impl serde::Serialize + Clone) {
@@ -242,7 +452,7 @@ fn emit_to(app: &AppHandle, label: &str, event: &str, payload: impl serde::Seria
     }
 }
 
-fn read_loop(app: AppHandle, label: String, mut stream: UnixStream, generation: u64) {
+fn read_loop(app: Option<AppHandle>, label: String, pane_id: String, mut stream: UnixStream, generation: u64) {
     loop {
         if generation_closed(&label, generation) {
             break;
@@ -256,33 +466,49 @@ fn read_loop(app: AppHandle, label: String, mut stream: UnixStream, generation: 
         }
         match decode_server(&payload) {
             Ok(ServerMessage::Terminal(frame)) => {
-                emit_to(
-                    &app,
-                    &label,
-                    "term-bytes",
-                    TermBytesEvent {
-                        generation,
-                        full: frame.full,
-                        width: frame.width,
-                        height: frame.height,
-                        bytes: base64::engine::general_purpose::STANDARD.encode(frame.bytes),
-                    },
-                );
+                publish_frame(RelayFrame {
+                    seq: 0,
+                    pane_id: pane_id.clone(),
+                    generation,
+                    full: frame.full,
+                    width: frame.width,
+                    height: frame.height,
+                    bytes: frame.bytes.clone(),
+                });
+                if let Some(app) = &app {
+                    emit_to(
+                        app,
+                        &label,
+                        "term-bytes",
+                        TermBytesEvent {
+                            generation,
+                            full: frame.full,
+                            width: frame.width,
+                            height: frame.height,
+                            bytes: base64::engine::general_purpose::STANDARD.encode(frame.bytes),
+                        },
+                    );
+                }
             }
             Ok(ServerMessage::ServerShutdown { reason }) => {
-                emit_to(
-                    &app,
-                    &label,
-                    "term-closed",
-                    reason.unwrap_or_else(|| "Herdr 关闭了终端连接".into()),
-                );
+                if let Some(app) = &app {
+                    emit_to(
+                        app,
+                        &label,
+                        "term-closed",
+                        reason.unwrap_or_else(|| "Herdr 关闭了终端连接".into()),
+                    );
+                }
                 break;
             }
             Ok(_) | Err(_) => {}
         }
     }
     if !generation_closed(&label, generation) {
-        emit_to(&app, &label, "term-closed", "终端连接已断开");
+        if let Some(app) = &app {
+            emit_to(app, &label, "term-closed", "终端连接已断开");
+        }
+        release_label(&label, true);
     }
 }
 
@@ -361,11 +587,5 @@ pub fn term_detach(window: WebviewWindow) -> Result<(), String> {
 }
 
 pub fn detach_label(label: &str) {
-    let Ok(mut links) = LINKS.lock() else {
-        return;
-    };
-    if let Some(mut current) = links.remove(label) {
-        let _ = write_msg(&mut current.writer, &ClientMessage::Detach);
-        let _ = current.writer.shutdown(std::net::Shutdown::Both);
-    }
+    release_label(label, true);
 }

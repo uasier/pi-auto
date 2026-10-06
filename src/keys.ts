@@ -4,6 +4,7 @@ export const LAYA_KEY_STORAGE = "pi-auto-laya-key";
 export const JEV_BASE_STORAGE = "pi-auto-jev-base";
 export const DEEPSEEK_BASE_STORAGE = "pi-auto-deepseek-base";
 export const LAYA_BASE_STORAGE = "pi-auto-laya-base";
+export const PRESET_TEXT_STORAGE = "pi-auto-preset-text";
 
 import { $ } from "./dom";
 
@@ -15,7 +16,7 @@ export function keyStorage(provider: DecisionProvider | string = "jev") {
   return JEV_KEY_STORAGE;
 }
 
-export function baseStorage(provider: DecisionProvider | string = "jev") {
+function baseStorage(provider: DecisionProvider | string = "jev") {
   if (provider === "deepseek") return DEEPSEEK_BASE_STORAGE;
   if (provider === "laya") return LAYA_BASE_STORAGE;
   return JEV_BASE_STORAGE;

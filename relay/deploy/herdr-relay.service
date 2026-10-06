@@ -1,0 +1,22 @@
+[Unit]
+Description=herdr+ public relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=herdr-relay
+Group=herdr-relay
+ExecStart=/usr/local/bin/herdr-relay -listen 0.0.0.0:8443 -cert /etc/herdr-relay/cert.pem -key /etc/herdr-relay/key.pem -token-file /etc/herdr-relay/token
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/herdr-relay
+ReadWritePaths=/var/lib/herdr-relay
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

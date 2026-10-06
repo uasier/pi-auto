@@ -67,6 +67,17 @@ fn deepseek_chat(
     if key.is_empty() {
         return Err("未配置 DeepSeek API Key。请在系统菜单「密钥设置」中填写".into());
     }
+    post_deepseek(&key, base_url, system, user, json_mode, temperature)
+}
+
+pub(crate) fn post_deepseek(
+    key: &str,
+    base_url: Option<String>,
+    system: &str,
+    user: &str,
+    json_mode: bool,
+    temperature: f64,
+) -> Result<String, String> {
     let endpoint = service_endpoint(
         base_url,
         &["DEEPSEEK_BASE_URL"],
@@ -171,5 +182,41 @@ fn strip_fence(text: &str) -> String {
     };
     let rest = rest.trim_start_matches(|ch: char| ch.is_ascii_alphanumeric()).trim_start();
     rest.strip_suffix("```").unwrap_or(rest).trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{complete_user_message, parse_complete_options, strip_fence};
+
+    #[test]
+    fn completion_strips_questions_and_keeps_three() {
+        let raw = r#"{"intent":"看一下报错？","options":["打开日志","打开日志","是不是端口被占？","检查 8100","第四条多余"]}"#;
+        let result = parse_complete_options(raw).unwrap();
+        assert_eq!(result.intent, "看一下报错？");
+        assert_eq!(result.options, vec!["打开日志", "是不是端口被占", "检查 8100"]);
+    }
+
+    #[test]
+    fn completion_accepts_fenced_object_options() {
+        let raw = "```json\n{\"intent\":\"修终端\",\"options\":[{\"text\":\"读当前输入\"}]}\n```";
+        let result = parse_complete_options(raw).unwrap();
+        assert_eq!(result.options, vec!["读当前输入"]);
+        assert_eq!(strip_fence(raw), "{\"intent\":\"修终端\",\"options\":[{\"text\":\"读当前输入\"}]}");
+    }
+
+    #[test]
+    fn completion_rejects_empty_options() {
+        let err = parse_complete_options(r#"{"intent":"x","options":[]}"#).unwrap_err();
+        assert!(err.contains("没有可用的补全"));
+        assert!(parse_complete_options("不是 json").is_err());
+    }
+
+    #[test]
+    fn context_is_prefixed_when_present() {
+        let with = complete_user_message("继续", Some("上一轮报错"));
+        assert!(with.contains("会话上下文"));
+        assert!(with.contains("上一轮报错"));
+        assert!(complete_user_message("继续", None).starts_with("当前输入"));
+    }
 }
 

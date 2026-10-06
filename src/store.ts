@@ -1,12 +1,12 @@
 import type { AgentSession, AppInfo, Plan, StallWatch, UpdateCheck } from "./types";
 
 export const AGENT_ORDER = ["pi", "claude", "codex", "grok", "shell"] as const;
-export const AGENT_META: Record<string, { label: string; hint: string }> = {
-  pi: { label: "Pi", hint: "π" },
-  claude: { label: "Claude", hint: "Anthropic" },
-  codex: { label: "Codex", hint: "OpenAI" },
-  grok: { label: "Grok", hint: "xAI" },
-  shell: { label: "终端", hint: "shell" },
+export const AGENT_META: Record<string, { label: string }> = {
+  pi: { label: "Pi" },
+  claude: { label: "Claude" },
+  codex: { label: "Codex" },
+  grok: { label: "Grok" },
+  shell: { label: "终端" },
 };
 export const LAUNCH_COMMAND: Record<string, string> = {
   shell: "",

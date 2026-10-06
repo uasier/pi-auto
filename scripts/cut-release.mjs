@@ -33,5 +33,5 @@ run("git", [
   "src-tauri/Cargo.lock",
 ])
 run("git", ["commit", "-m", `chore: 发布 v${ver}`])
-run("git", ["tag", "-a", `v${ver}`, "-m", `终端自动应答 v${ver}`])
+run("git", ["tag", "-a", `v${ver}`, "-m", `herdr+ v${ver}`])
 console.log(`已提交并打 tag v${ver}。推送：\n  git push origin HEAD && git push origin v${ver}`)

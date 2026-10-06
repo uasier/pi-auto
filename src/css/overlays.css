@@ -93,6 +93,13 @@
   place-items: center;
   padding: 24px;
   background: rgba(8, 10, 14, 0.78);
+  animation: guide-in 0.18s ease;
+}
+.guide-card { animation: card-in 0.24s ease; }
+@keyframes guide-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes card-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .guide, .guide-card { animation: none; }
 }
 
 .guide-card {
@@ -193,6 +200,30 @@ pre.cmd,
   border-top: 1px solid var(--line);
 }
 
+.keys-block textarea {
+  width: 100%;
+  min-height: 72px;
+  margin-top: 4px;
+  resize: vertical;
+}
+
+.shortcut-row {
+  grid-template-columns: 148px minmax(0, 1fr);
+  align-items: center;
+}
+.shortcut-row span { color: var(--muted); font-size: 12px; }
+.shortcut-fixed {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.shortcut-fixed b {
+  display: inline-block;
+  min-width: 42px;
+  color: var(--text);
+  font-weight: 500;
+}
+
 .keys-title {
   display: flex;
   align-items: center;
@@ -275,6 +306,12 @@ pre.cmd,
 .guide-card textarea { min-height: 120px; }
 
 .hidden { display: none !important; }
+.device-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-top: 6px; }
+.device-row button { padding: 2px 8px; }
+.channel-qr { display: grid; place-items: center; min-height: 48px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.channel-qr svg { width: 180px; height: 180px; background: #fff; border-radius: 8px; }
+#channel-btn.on { color: var(--idle); }
+#channel-note.ok { color: var(--idle); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 

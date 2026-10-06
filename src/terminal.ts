@@ -2,10 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { $, escapeHtml, sessionLabel, shortPath } from "./dom";
-import { DEEPSEEK_KEY_STORAGE, keyInput, providerBase } from "./keys";
+import { DEEPSEEK_KEY_STORAGE, PRESET_TEXT_STORAGE, keyInput, providerBase } from "./keys";
 import { log, logShortcut } from "./log";
-
-type AgentSession = { id: string; paneId: string; cwd: string; title?: string; agentLabel: string };
+import { shortcutEnabled } from "./shortcuts";
+import type { AgentSession } from "./types";
 type TermFrame = { generation: number; full: boolean; width: number; height: number; bytes: string };
 
 let currentSession: () => AgentSession | undefined = () => undefined;
@@ -15,18 +15,18 @@ export function bindPromptSession(fn: () => AgentSession | undefined) {
 
 const termFit = new FitAddon();
 export let term: Terminal | null = null;
-export let termLive = false;
+let termLive = false;
 let termEpoch = 0;
-export let termAttachId = "";
-export let termGeneration = 0;
+let termAttachId = "";
+let termGeneration = 0;
 let termPainted = false;
 let termFullCount = 0;
-export let termBuffering = false;
+let termBuffering = false;
 let termHoldResize = false;
 let termRevealTimer: number | null = null;
 let termWantCols = 0;
 let termWantRows = 0;
-export const termQueue: TermFrame[] = [];
+const termQueue: TermFrame[] = [];
 const TERM_FONT = '"SF Mono", Menlo, "PingFang SC", "Hiragino Sans GB", ui-monospace, monospace';
 
 function b64ToBytes(payload: string): Uint8Array {
@@ -43,6 +43,58 @@ function textToB64(text: string): string {
   return btoa(binary);
 }
 
+export type TermColors = {
+  background: string;
+  foreground: string;
+  cursor: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  cyan: string;
+};
+
+let termColors: TermColors = {
+  background: "#0a0c10",
+  foreground: "#d5dbe4",
+  cursor: "#d5dbe4",
+  red: "#c98b86",
+  green: "#86a892",
+  yellow: "#c6b48a",
+  blue: "#8aa4c2",
+  cyan: "#7eaea6",
+};
+
+function xtermTheme(colors: TermColors) {
+  return {
+    background: colors.background,
+    foreground: colors.foreground,
+    cursor: colors.cursor,
+    selectionBackground: colors.blue,
+    black: colors.background,
+    red: colors.red,
+    green: colors.green,
+    yellow: colors.yellow,
+    blue: colors.blue,
+    magenta: colors.cursor,
+    cyan: colors.cyan,
+    white: colors.foreground,
+    brightBlack: colors.cursor,
+    brightRed: colors.red,
+    brightGreen: colors.green,
+    brightYellow: colors.yellow,
+    brightBlue: colors.blue,
+    brightMagenta: colors.cursor,
+    brightCyan: colors.cyan,
+    brightWhite: colors.foreground,
+  };
+}
+
+export function applyTermTheme(colors: TermColors) {
+  termColors = colors;
+  if (term) term.options.theme = xtermTheme(colors);
+}
+
 function ensureTerm() {
   if (term) return term;
   term = new Terminal({
@@ -54,27 +106,7 @@ function ensureTerm() {
     lineHeight: 1.15,
     cursorBlink: true,
     scrollback: 5000,
-    theme: {
-      background: "#0a0c10",
-      foreground: "#d5dbe4",
-      cursor: "#d5dbe4",
-      black: "#15181e",
-      red: "#c98b86",
-      green: "#86a892",
-      yellow: "#c6b48a",
-      blue: "#8aa4c2",
-      magenta: "#a99bc4",
-      cyan: "#7eaea6",
-      white: "#d5dbe4",
-      brightBlack: "#6d7582",
-      brightRed: "#dba8a4",
-      brightGreen: "#a4c2ad",
-      brightYellow: "#d8c7a8",
-      brightBlue: "#a9bdd4",
-      brightMagenta: "#c4b8d8",
-      brightCyan: "#a4ccc6",
-      brightWhite: "#e7ebf2",
-    },
+    theme: xtermTheme(termColors),
   });
   term.loadAddon(termFit);
   const host = $("term-host");
@@ -132,7 +164,7 @@ function showTermReady() {
   $("term-host").classList.add("ready");
 }
 
-export function paintTermFrame(frame: TermFrame) {
+function paintTermFrame(frame: TermFrame) {
   if (!term) return;
   if (!termPainted && !frameMatches(frame)) return;
   if (term.cols !== frame.width || term.rows !== frame.height) term.resize(frame.width, frame.height);
@@ -185,7 +217,7 @@ function resizeLiveTerm() {
   }, 80);
 }
 
-export async function startLiveTerm(session: AgentSession) {
+async function startLiveTerm(session: AgentSession) {
   const epoch = ++termEpoch;
   const t = ensureTerm();
   termLive = false;
@@ -290,7 +322,7 @@ export function onPromptKey(event: KeyboardEvent) {
       return true;
     }
   }
-  if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey && terminalFocused(event.target)) {
+  if (event.key === "Tab" && shortcutEnabled("tab") && !event.metaKey && !event.ctrlKey && !event.altKey && terminalFocused(event.target)) {
     event.preventDefault();
     event.stopPropagation();
     if (Date.now() - lastTabAt < 320) {
@@ -304,7 +336,19 @@ export function onPromptKey(event: KeyboardEvent) {
     }
     return true;
   }
-  if ((event.metaKey || event.ctrlKey) && event.shiftKey && (key === "o" || event.code === "KeyO")) {
+  if (shortcutEnabled("shift") && event.key === "Shift" && !event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey && terminalFocused(event.target)) {
+    const now = Date.now();
+    if (now - lastShiftAt < 320) {
+      lastShiftAt = 0;
+      event.preventDefault();
+      event.stopPropagation();
+      logShortcut("双击 Shift 追加预置文本");
+      void appendPresetText();
+      return true;
+    }
+    lastShiftAt = now;
+  }
+  if (shortcutEnabled("refine") && (event.metaKey || event.ctrlKey) && event.shiftKey && (key === "o" || event.code === "KeyO")) {
     event.preventDefault();
     event.stopPropagation();
     logShortcut("⌘⇧O 优化输入");
@@ -380,6 +424,28 @@ function terminalRequestText() {
   return term?.getSelection()?.trim() ?? "";
 }
 
+function presetText() {
+  const typed = $<HTMLTextAreaElement>("preset-text").value.replace(/\s*\n+\s*/g, " ").trim();
+  const saved = (localStorage.getItem(PRESET_TEXT_STORAGE) ?? "").replace(/\s*\n+\s*/g, " ").trim();
+  return typed || saved;
+}
+
+async function appendPresetText() {
+  const preset = presetText();
+  if (!preset) {
+    log("还没有预置文本。请在密钥设置里填写并保存", true);
+    return;
+  }
+  const current = currentTerminalInput();
+  const gap = current && !/\s$/.test(current) && !/^\s/.test(preset) ? " " : "";
+  try {
+    await replaceTerminalInput(current, `${current}${gap}${preset}`);
+    log("已追加预置文本");
+  } catch (error) {
+    log(String(error), true);
+  }
+}
+
 async function replaceTerminalInput(original: string, next: string) {
   if (!termLive) throw new Error("终端未接入");
   const erasers = "\x7f".repeat(Array.from(original).length);
@@ -387,19 +453,20 @@ async function replaceTerminalInput(original: string, next: string) {
   term?.focus();
 }
 
-export function terminalFocused(target?: EventTarget | null) {
+function terminalFocused(target?: EventTarget | null) {
   const host = $("term-host");
   const active = document.activeElement;
   if (target instanceof Node && host.contains(target)) return true;
   return !!active && (host.contains(active) || active.classList.contains("xterm-helper-textarea"));
 }
 
-export let lastTabAt = 0;
-export let tabTimer: number | null = null;
+let lastShiftAt = 0;
+let lastTabAt = 0;
+let tabTimer: number | null = null;
 let completeSource = "";
 let completeChoices: string[] = [];
 
-export function hideCompletePicker() {
+function hideCompletePicker() {
   completeChoices = [];
   completeSource = "";
   $("complete-picker").classList.add("hidden");
@@ -422,7 +489,7 @@ function showCompletePicker(source: string, options: string[], intent = "") {
   $("complete-picker").classList.remove("hidden");
 }
 
-export async function chooseComplete(index: number) {
+async function chooseComplete(index: number) {
   const next = completeChoices[index];
   const source = completeSource;
   if (!next || !source) return;
@@ -435,7 +502,7 @@ export async function chooseComplete(index: number) {
   }
 }
 
-export function noteSingleTab() {
+function noteSingleTab() {
   lastTabAt = Date.now();
   if (tabTimer != null) window.clearTimeout(tabTimer);
   tabTimer = window.setTimeout(() => {
@@ -445,7 +512,7 @@ export function noteSingleTab() {
   }, 320);
 }
 
-export async function completeTerminalInput() {
+async function completeTerminalInput() {
   const now = Date.now();
   if (refineBusy || now - refineOpenedAt < 400) return;
   refineOpenedAt = now;

@@ -20,7 +20,7 @@ export type TaskItem = {
   commit: boolean;
   status: TaskStatus;
 };
-export type Phase = "idle" | "sent" | "working" | "settling";
+type Phase = "idle" | "sent" | "working" | "settling";
 export type Plan = {
   tasks: TaskItem[];
   template: Array<Pick<TaskItem, "title" | "text" | "commit">>;
@@ -42,8 +42,6 @@ export type Plan = {
 };
 export type HerdrStatus = {
   connected: boolean;
-  endpoint: string | null;
-  paneCount: number;
   agentCount: number;
   error: string | null;
 };
@@ -67,5 +65,5 @@ export type JevDecision = {
   choice: string;
   confidence: number;
   continueNow: number;
-  endpoint?: string;
+  endpoint?: string | null;
 };

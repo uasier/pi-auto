@@ -3,8 +3,6 @@ import { applyStep, queueAiTurn, refreshGameBackends, resetSnake, startControlLo
 import { beginDino, onDinoKey, resetDino, stopDino } from "./dino";
 import { $ } from "./dom";
 
-export { refreshGameBackends };
-
 type SnakeDriver = "manual" | "jev" | "laya";
 const SNAKE_DRIVER_KEY = "pi-auto-snake-driver";
 const DINO_DRIVER_KEY = "pi-auto-dino-driver";
@@ -52,7 +50,7 @@ function loadDriverSelect(game: IdleGameKind = idleGame()) {
   if (select.value !== driver) select.value = driver;
 }
 
-export function syncSnakeControls() {
+function syncSnakeControls() {
   const snake = idleGame() === "snake";
   $("idle-game").classList.toggle("hidden", !snake);
   $("idle-dino").classList.toggle("hidden", snake);
@@ -62,7 +60,7 @@ export function syncSnakeControls() {
 }
 
 
-export function beginGame() {
+function beginGame() {
   if (idleGame() === "dino") {
     beginDino();
     return;
@@ -107,7 +105,7 @@ export function hideIdleGame() {
   stopDino();
 }
 
-export function onIdleGameKey(event: KeyboardEvent) {
+function onIdleGameKey(event: KeyboardEvent) {
   if ($("preview-empty").classList.contains("hidden")) return;
   const tag = (event.target as HTMLElement | null)?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
