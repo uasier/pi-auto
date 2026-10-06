@@ -19,8 +19,11 @@ object RelayHub {
             callback(text)
         } else {
             synchronized(pending) {
+                if (pending.size >= 40) {
+                    pending.clear()
+                    pending.addLast("""{"type":"channel.resync"}""")
+                }
                 pending.addLast(text)
-                while (pending.size > 40) pending.removeFirst()
             }
         }
     }

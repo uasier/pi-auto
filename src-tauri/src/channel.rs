@@ -262,7 +262,9 @@ fn session(
     epoch: u64,
 ) -> Result<(), String> {
     let mut socket = connect_socket(config)?;
-    let mut devices: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut devices = SessionSubscriptions::new(herdr_term::relay_unsubscribe);
+    for _ in frames.try_iter().take(128) {}
+    herdr_term::take_frame_overflow();
     let mut device_count = 0;
     set_live(app, true, 0, None);
     send_json(&mut socket, &host_state(config))?;
@@ -271,47 +273,118 @@ fn session(
     let mut last_push = Instant::now();
     let mut last_sessions = String::new();
     let mut last_herdr = String::new();
+    let mut last_snapshot = Instant::now();
+    let mut last_received = Instant::now();
 
     loop {
         if EPOCH.load(Ordering::Relaxed) != epoch {
             let _ = socket.send(tungstenite::Message::Close(None));
             return Ok(());
         }
-        while let Ok(frame) = frames.try_recv() {
-            send_json(&mut socket, &frame_message(&frame))?;
+        if herdr_term::take_frame_overflow() && devices.has_subscriptions() {
+            return Err("终端转发拥堵，正在重新同步".into());
+        }
+        // 每轮给输入、心跳和配置变更留出处理机会。
+        for frame in frames.try_iter().take(32) {
+            if devices.has_pane(&frame.pane_id) {
+                send_json(&mut socket, &frame_message(&frame))?;
+            }
         }
         if last_push.elapsed() >= Duration::from_millis(1500) {
             last_push = Instant::now();
             let sessions_value = snapshot_message();
             let sessions = serde_json::to_string(&sessions_value).unwrap_or_default();
-            if sessions != last_sessions {
+            let refresh = last_snapshot.elapsed() >= Duration::from_secs(15);
+            if sessions != last_sessions || refresh {
                 last_sessions = sessions;
                 send_json(&mut socket, &sessions_value)?;
             }
             let herdr = serde_json::to_string(&herdr_message()).unwrap_or_default();
-            if herdr != last_herdr {
+            if herdr != last_herdr || refresh {
                 last_herdr = herdr;
                 send_json(&mut socket, &herdr_message())?;
             }
+            if refresh { last_snapshot = Instant::now(); }
             herdr_term::maintain_relay();
         }
-        match socket.read() {
-            Ok(tungstenite::Message::Text(text)) => {
+        match read_channel(&mut socket, &mut last_received)? {
+            Some(tungstenite::Message::Text(text)) => {
                 if let Ok(msg) = serde_json::from_str::<Value>(&text) {
                     device_count = handle_message(config, &mut socket, &mut devices, device_count, &msg)?;
                     set_live(app, true, device_count, None);
                 }
             }
-            Ok(tungstenite::Message::Ping(payload)) => {
+            Some(tungstenite::Message::Ping(payload)) => {
                 socket
                     .send(tungstenite::Message::Pong(payload))
                     .map_err(|err| format!("心跳失败：{err}"))?;
             }
-            Ok(tungstenite::Message::Close(_)) => return Err("中继关闭了连接".into()),
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(err))
-                if err.kind() == std::io::ErrorKind::WouldBlock || err.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(err) => return Err(format!("通道断开：{err}")),
+            Some(tungstenite::Message::Close(_)) => return Err("中继关闭了连接".into()),
+            _ => {}
+        }
+    }
+}
+
+fn read_channel(socket: &mut Socket, last_received: &mut Instant) -> Result<Option<tungstenite::Message>, String> {
+    if last_received.elapsed() >= Duration::from_secs(90) {
+        return Err("中继超过 90 秒没有响应，正在重连".into());
+    }
+    match socket.read() {
+        Ok(message) => {
+            *last_received = Instant::now();
+            Ok(Some(message))
+        }
+        Err(tungstenite::Error::Io(err))
+            if matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => Ok(None),
+        Err(err) => Err(format!("通道断开：{err}")),
+    }
+}
+
+struct SessionSubscriptions {
+    devices: HashMap<String, HashSet<String>>,
+    release: fn(&str),
+}
+
+impl SessionSubscriptions {
+    fn new(release: fn(&str)) -> Self {
+        Self { devices: HashMap::new(), release }
+    }
+
+    fn subscribe(&mut self, from: &str, pane: &str, attach: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+        if self.devices.get(from).map(|panes| panes.contains(pane)).unwrap_or(false) {
+            return Ok(());
+        }
+        attach(pane)?;
+        self.devices.entry(from.into()).or_default().insert(pane.into());
+        Ok(())
+    }
+
+    fn unsubscribe(&mut self, from: &str, pane: &str) {
+        if self.devices.get_mut(from).map(|panes| panes.remove(pane)).unwrap_or(false) {
+            (self.release)(pane);
+        }
+    }
+
+    fn remove_device(&mut self, from: &str) {
+        if let Some(panes) = self.devices.remove(from) {
+            for pane in panes { (self.release)(&pane); }
+        }
+    }
+
+    fn has_pane(&self, pane: &str) -> bool {
+        self.devices.values().any(|panes| panes.contains(pane))
+    }
+
+    fn has_subscriptions(&self) -> bool {
+        self.devices.values().any(|panes| !panes.is_empty())
+    }
+}
+
+impl Drop for SessionSubscriptions {
+    fn drop(&mut self) {
+        // 正常退出、读写失败和重新配置都释放本次连接持有的引用。
+        for panes in self.devices.values() {
+            for pane in panes { (self.release)(pane); }
         }
     }
 }
@@ -319,7 +392,7 @@ fn session(
 fn handle_message(
     config: &ChannelConfig,
     socket: &mut Socket,
-    devices: &mut HashMap<String, HashSet<String>>,
+    devices: &mut SessionSubscriptions,
     mut device_count: usize,
     msg: &Value,
 ) -> Result<usize, String> {
@@ -336,19 +409,21 @@ fn handle_message(
             let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
             match (msg.get("role").and_then(|v| v.as_str()), msg.get("event").and_then(|v| v.as_str())) {
                 (Some("device"), Some("join")) => {
-                    device_count = device_count.saturating_add(1);
+                    if !devices.devices.contains_key(id) {
+                        devices.devices.insert(id.into(), HashSet::new());
+                        device_count = device_count.saturating_add(1);
+                    }
                     send_json(socket, &host_state(config))?;
                     send_json(socket, &snapshot_message())?;
                 }
                 (Some("device"), Some("leave")) => {
                     device_count = device_count.saturating_sub(1);
-                    if let Some(panes) = devices.remove(id) {
-                        for pane in panes {
-                            herdr_term::relay_unsubscribe(&pane);
-                        }
-                    }
+                    devices.remove_device(id);
                 }
                 _ => {}
+            }
+            if let Some(count) = msg.get("devices").and_then(Value::as_u64) {
+                device_count = count as usize;
             }
         }
         Some("relay.deliver") => {
@@ -365,53 +440,59 @@ fn handle_message(
 fn handle_device(
     config: &ChannelConfig,
     socket: &mut Socket,
-    devices: &mut HashMap<String, HashSet<String>>,
+    devices: &mut SessionSubscriptions,
     from: &str,
     payload: &Value,
 ) -> Result<(), String> {
     let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let pane = payload.get("paneId").and_then(|v| v.as_str()).unwrap_or("").trim();
     match kind {
+        "sessions.get" => {
+            send_reply(socket, from, host_state(config))?;
+            send_reply(socket, from, herdr_message())?;
+            send_reply(socket, from, snapshot_message())?;
+        }
         "term.subscribe" => {
             if pane.is_empty() || pane.len() > 80 {
                 return Ok(());
             }
-            if let Err(err) = herdr_term::relay_subscribe(pane) {
-                send_json(socket, &json!({"type":"error","message": err}))?;
+            if let Err(err) = devices.subscribe(from, pane, herdr_term::relay_subscribe) {
+                send_reply(socket, from, json!({"type":"error","message": err}))?;
                 return Ok(());
             }
-            devices.entry(from.to_string()).or_default().insert(pane.to_string());
             for frame in replay_or_snapshot(pane) {
-                send_json(socket, &frame_message(&frame))?;
+                send_reply(socket, from, frame_message(&frame))?;
             }
         }
         "term.unsubscribe" => {
-            devices.get_mut(from).map(|set| set.remove(pane));
-            herdr_term::relay_unsubscribe(pane);
+            devices.unsubscribe(from, pane);
         }
         "term.input" => {
             if !config.allow_input {
-                send_json(socket, &json!({"type":"error","message":"远程输入已关闭"}))?;
+                send_reply(socket, from, json!({"type":"error","message":"远程输入已关闭"}))?;
                 return Ok(());
             }
-            let data = decode_bytes(payload.get("bytes").and_then(|v| v.as_str()).unwrap_or(""))?;
+            let data = match decode_bytes(payload.get("bytes").and_then(|v| v.as_str()).unwrap_or("")) {
+                Ok(data) => data,
+                Err(err) => return send_reply(socket, from, json!({"type":"error","message":err})),
+            };
             if data.len() > 64 * 1024 {
                 return Ok(());
             }
             if let Err(err) = herdr_term::write_input_pane(pane, data) {
-                send_json(socket, &json!({"type":"error","message": err}))?;
+                send_reply(socket, from, json!({"type":"error","message": err}))?;
             }
         }
         "term.scroll" => {
             let direction = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
-            let lines = payload.get("lines").and_then(|v| v.as_u64()).unwrap_or(1) as u16;
+            let lines = payload.get("lines").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 3) as u16;
             if let Err(err) = herdr_term::write_scroll_pane(pane, direction, lines) {
-                send_json(socket, &json!({"type":"error","message": err}))?;
+                send_reply(socket, from, json!({"type":"error","message": err}))?;
             }
         }
         "prompt" => {
             if !config.allow_input {
-                send_json(socket, &json!({"type":"error","message":"远程输入已关闭"}))?;
+                send_reply(socket, from, json!({"type":"error","message":"远程输入已关闭"}))?;
                 return Ok(());
             }
             let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -419,13 +500,18 @@ fn handle_device(
                 return Ok(());
             }
             if let Err(err) = crate::herdr::prompt_agent(pane, text) {
-                send_json(socket, &json!({"type":"error","message": err}))?;
+                send_reply(socket, from, json!({"type":"error","message": err}))?;
             }
         }
-        "ping" => send_json(socket, &json!({"type":"pong"}))?,
+        "ping" => send_reply(socket, from, json!({"type":"pong"}))?,
         _ => {}
     }
     Ok(())
+}
+
+fn send_reply(socket: &mut Socket, to: &str, mut value: Value) -> Result<(), String> {
+    value["to"] = Value::String(to.into());
+    send_json(socket, &value)
 }
 
 fn replay_or_snapshot(pane: &str) -> Vec<RelayFrame> {
@@ -435,23 +521,21 @@ fn replay_or_snapshot(pane: &str) -> Vec<RelayFrame> {
     }
     let text = crate::herdr::read_pane(pane).unwrap_or_default();
     if text.is_empty() {
-        return frames;
+        return Vec::new();
     }
     let (width, height) = frames
         .last()
         .map(|frame| (frame.width, frame.height))
         .unwrap_or((100, 32));
-    let mut out = vec![RelayFrame {
-        seq: 0,
+    vec![RelayFrame {
+        seq: frames.last().map(|frame| frame.seq).unwrap_or(0),
         pane_id: pane.to_string(),
         generation: 0,
         full: true,
         width,
         height,
-        bytes: text.into_bytes(),
-    }];
-    out.extend(frames);
-    out
+        bytes: format!("\u{1b}[2J\u{1b}[H{text}").into_bytes(),
+    }]
 }
 
 fn snapshot_message() -> Value {
@@ -867,6 +951,29 @@ use tungstenite::client::IntoClientRequest;
 mod tests {
     use super::*;
 
+    #[test]
+    fn subscriptions_are_idempotent_owned_and_released_on_disconnect() {
+        static RELEASED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        fn release(pane: &str) { RELEASED.lock().unwrap().push(pane.into()); }
+        RELEASED.lock().unwrap().clear();
+        let mut attached = 0;
+        {
+            let mut subscriptions = SessionSubscriptions::new(release);
+            subscriptions.subscribe("phone", "pane", |_| { attached += 1; Ok(()) }).unwrap();
+            subscriptions.subscribe("phone", "pane", |_| { attached += 1; Ok(()) }).unwrap();
+            assert_eq!(attached, 1);
+            subscriptions.unsubscribe("unknown", "pane");
+            assert!(RELEASED.lock().unwrap().is_empty());
+            assert!(subscriptions.subscribe("web", "missing", |_| Err("终端不存在".into())).is_err());
+            assert!(!subscriptions.has_pane("missing"));
+            subscriptions.subscribe("web", "pane", |_| Ok(())).unwrap();
+            subscriptions.remove_device("phone");
+            assert_eq!(RELEASED.lock().unwrap().len(), 1);
+            assert!(subscriptions.has_pane("pane"));
+        }
+        assert_eq!(*RELEASED.lock().unwrap(), vec!["pane", "pane"]);
+    }
+
     fn check_local_relay(tls_delay: Duration, websocket_delay: Duration, reject_first: bool) {
         let _ = rustls::crypto::ring::default_provider().install_default();
         // 夹具证书和私钥仅用于回环连接，不用于任何真实服务。
@@ -897,8 +1004,10 @@ mod tests {
             }
             std::thread::sleep(websocket_delay);
             let mut socket = tungstenite::accept(tls).unwrap();
-            let message = socket.read().unwrap();
-            socket.send(message).unwrap();
+            for _ in 0..5 {
+                let message = socket.read().unwrap();
+                socket.send(message).unwrap();
+            }
         });
 
         if reject_first {
@@ -911,12 +1020,27 @@ mod tests {
             panic!("本地中转握手失败：{}", result.err().unwrap());
         }
         let mut socket = result.unwrap();
+        let mut stale = Instant::now() - Duration::from_secs(91);
+        assert!(read_channel(&mut socket, &mut stale).unwrap_err().contains("90 秒"));
         let started = Instant::now();
-        assert!(matches!(socket.read(), Err(tungstenite::Error::Io(err))
-            if matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)));
+        assert!(read_channel(&mut socket, &mut Instant::now()).unwrap().is_none());
         assert!(started.elapsed() < Duration::from_millis(500), "握手完成后应恢复短轮询");
         // 已验证空闲读取及时返回，回送验证使用宽松期限以避免调度抖动。
         socket.get_ref().sock.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut subscriptions = SessionSubscriptions::new(|_| {});
+        handle_device(&config, &mut socket, &mut subscriptions, "phone", &json!({
+            "type":"term.input", "paneId":"pane", "bytes":"%%%"
+        })).unwrap();
+        let error: Value = serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(error["type"], "error");
+        assert_eq!(error["to"], "phone");
+        handle_device(&config, &mut socket, &mut subscriptions, "phone", &json!({"type":"sessions.get"})).unwrap();
+        for kind in ["host.state", "herdr", "sessions"] {
+            let response: Value = serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(response["type"], kind);
+            assert_eq!(response["to"], "phone");
+            if kind == "sessions" { assert!(response["items"].is_array()); }
+        }
         socket.send(tungstenite::Message::Text("probe".into())).unwrap();
         assert_eq!(socket.read().unwrap().into_text().unwrap(), "probe");
         server.join().unwrap();

@@ -13,11 +13,11 @@ func (h *hub) authConfig(w http.ResponseWriter, _ *http.Request) {
 	setHeaders(w)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":          h.github.ready(),
-		"login":       "/auth/github",
-		"device":      "/v1/auth/github/device",
-		"callback":    h.github.callbackURL(),
-		"setupHint":   "在 GitHub 新建 OAuth App，回调填 " + h.github.callbackURL() + "，并勾选 Enable Device Flow。把 Client ID 和 Secret 写到 /etc/herdr-relay/github.env",
+		"ok":        h.github.ready(),
+		"login":     "/auth/github",
+		"device":    "/v1/auth/github/device",
+		"callback":  h.github.callbackURL(),
+		"setupHint": "在 GitHub 新建 OAuth App，回调填 " + h.github.callbackURL() + "，并勾选 Enable Device Flow。把 Client ID 和 Secret 写到 /etc/herdr-relay/github.env",
 	})
 }
 
@@ -177,15 +177,7 @@ func (h *hub) serveGitHub(w http.ResponseWriter, r *http.Request, sessionID stri
 		}
 	}
 	go c.writeLoop()
-	c.trySend(mustJSON(map[string]any{
-		"type":        "relay.welcome",
-		"role":        sess.Role,
-		"self":        c.id,
-		"accountName": sess.Login,
-		"avatar":      sess.Avatar,
-		"login":       sess.Login,
-		"macs":        room.snapshot(),
-	}))
+	room.welcome(c)
 	log.Printf("github %s connected as %s", sess.Login, sess.Role)
 	c.readLoop(h)
 }
@@ -229,4 +221,3 @@ func roleForClient(name string) string {
 	}
 	return "device"
 }
-

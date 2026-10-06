@@ -46,3 +46,13 @@ jobs:
 
       - name: Test rust
         run: npm run test:rust
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: relay/go.sum
+
+      - name: Test relay communication
+        working-directory: relay
+        run: go test -race ./...

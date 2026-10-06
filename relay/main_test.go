@@ -69,17 +69,14 @@ func TestHostSecretCannotLoginDevice(t *testing.T) {
 
 func readType(t *testing.T, conn *websocket.Conn, kind string) bool {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			continue
+			return false
 		}
 		if strings.Contains(string(msg), `"type":"`+kind+`"`) {
 			return true
 		}
 	}
-	return false
 }
-

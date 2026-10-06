@@ -36,6 +36,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingPane: String? = null
     private var loginLayer: LinearLayout? = null
     private var lastInsetBottom = -1
+    private val outbound = ArrayDeque<String>()
+    private var flushPosted = false
+    private val flushJs = Runnable { flushOutbound() }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,6 +73,9 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageReady = true
                 web.evaluateJavascript("document.body.classList.add('native')", null)
+                // 页面加载期间积压的欢迎与会话消息也必须立即送达。
+                web.removeCallbacks(flushJs)
+                flushOutbound()
                 flushPending()
             }
         }
@@ -86,8 +92,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        RelayHub.setVisible(true)
         RelayHub.listener = { text -> deliver(text) }
+        RelayHub.setVisible(true)
         RelayHub.flush()
         if (pageReady) web.evaluateJavascript("window.__relay&&window.__relay.refreshNotify&&window.__relay.refreshNotify()", null)
     }
@@ -219,8 +225,43 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun deliver(text: String) {
-        val payload = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        web.post { web.evaluateJavascript("window.__relay&&window.__relay.onB64('$payload')", null) }
+        web.post {
+            // 队列丢失任何增量后都重新选择 Mac 并回放，避免残缺终端长期存在。
+            if (outbound.size >= 24) {
+                outbound.clear()
+                outbound.addLast("""{"type":"channel.resync"}""")
+            }
+            outbound.addLast(text)
+            if (!flushPosted) {
+                flushPosted = true
+                web.postDelayed(flushJs, 32)
+            }
+        }
+    }
+
+    private fun flushOutbound() {
+        flushPosted = false
+        if (!pageReady || outbound.isEmpty()) return
+        val chunk = ArrayList<String>(6)
+        repeat(6) {
+            if (outbound.isEmpty()) return@repeat
+            chunk.add(Base64.encodeToString(outbound.removeFirst().toByteArray(Charsets.UTF_8), Base64.NO_WRAP))
+        }
+        val js = buildString {
+            append("window.__relay&&window.__relay.onBatch&&window.__relay.onBatch([")
+            chunk.forEachIndexed { index, payload ->
+                if (index > 0) append(',')
+                append('\'')
+                append(payload)
+                append('\'')
+            }
+            append("])")
+        }
+        web.evaluateJavascript(js, null)
+        if (outbound.isNotEmpty()) {
+            flushPosted = true
+            web.postDelayed(flushJs, 16)
+        }
     }
 
     private fun startRelay(url: String, token: String, pin: String, session: String) {

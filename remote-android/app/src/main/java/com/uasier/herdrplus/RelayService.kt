@@ -30,6 +30,10 @@ class RelayService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val panes = linkedMapOf<String, PaneSnap>()
     private var socket: WebSocket? = null
+    private var selectedMac = ""
+    private var selfID = ""
+    private var transport: OkHttpClient? = null
+    private var transportPin = ""
     private var wake: PowerManager.WakeLock? = null
     private var generation = 0
     private var reconnectQueued = false
@@ -53,7 +57,14 @@ class RelayService : Service() {
     override fun onCreate() {
         super.onCreate()
         Notifier.ensure(this)
-        RelayHub.onVisible = { visible -> if (visible) acknowledge() }
+        selectedMac = prefs().getString(KEY_MAC, "").orEmpty()
+        session = prefs().getString(KEY_SESSION, "").orEmpty()
+        RelayHub.onVisible = { visible ->
+            if (visible) {
+                acknowledge()
+                if (hostOnline) RelayHub.emit("""{"type":"channel.resync"}""")
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -74,9 +85,13 @@ class RelayService : Service() {
     }
 
     override fun onDestroy() {
+        userStopped = true
+        generation += 1
+        SocketBus.sender = null
         RelayHub.onVisible = null
         handler.removeCallbacksAndMessages(null)
-        socket?.close(1000, "bye")
+        socket?.cancel()
+        socket = null
         releaseWake()
         super.onDestroy()
     }
@@ -87,7 +102,12 @@ class RelayService : Service() {
             url = incoming
             token = intent?.getStringExtra(EXTRA_TOKEN).orEmpty()
             pin = intent?.getStringExtra(EXTRA_PIN).orEmpty()
-            session = intent?.getStringExtra(EXTRA_SESSION).orEmpty()
+            val incomingSession = intent?.getStringExtra(EXTRA_SESSION).orEmpty()
+            if (session.isNotBlank() && incomingSession != session) {
+                selectedMac = ""
+                prefs().edit().remove(KEY_MAC).apply()
+            }
+            session = incomingSession
             savePrefs()
         } else if (url.isBlank()) {
             val prefs = prefs()
@@ -115,7 +135,8 @@ class RelayService : Service() {
         reconnectQueued = false
         generation += 1
         val gen = generation
-        socket?.close(1000, "reconnect")
+        socket?.cancel()
+        hostOnline = false
         val client = client(cleanPin)
         val join = if (url.contains("?")) "&" else "?"
         val query = "session=${Uri.encode(session)}"
@@ -125,58 +146,99 @@ class RelayService : Service() {
         refresh(if (attempts == 0) "正在连接" else "正在重连", "第 ${attempts + 1} 次", true)
         val opened = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (gen != generation) return
-                val recovered = attempts > 0
-                attempts = 0
-                reconnecting = false
-                connectedAt = System.currentTimeMillis()
-                acquireWake()
-                refresh(if (recovered) "通道已恢复" else "herdr+ 已连接", "正在同步会话", false)
+                handler.post {
+                    if (gen != generation || userStopped) return@post
+                    val recovered = attempts > 0
+                    attempts = 0
+                    reconnecting = false
+                    connectedAt = System.currentTimeMillis()
+                    acquireWake()
+                    refresh(if (recovered) "通道已恢复" else "herdr+ 已连接", "正在同步会话", false)
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (gen != generation) return
-                RelayHub.emit(text)
-                handle(text)
+                handler.post {
+                    if (gen != generation || userStopped) return@post
+                    handle(text)
+                    RelayHub.emit(text)
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (gen != generation || userStopped) return
                 val code = response?.code ?: 0
-                val detail = response?.body?.string()?.trim().orEmpty().ifBlank { t.message ?: "连接失败" }
-                RelayHub.emit("""{"type":"error","message":${jsonString(detail)}}""")
-                if (code == 401 || code == 403) {
-                    generation += 1
-                    refresh("登录已失效", detail, false)
-                    if (!RelayHub.resumed) Notifier.loginExpired(this@RelayService, detail)
-                    return
+                val detail = t.message ?: "连接失败"
+                handler.post {
+                    if (gen != generation || userStopped) return@post
+                    socket = null
+                    SocketBus.sender = null
+                    hostOnline = false
+                    RelayHub.emit(JSONObject().put("type", "error").put("message", detail).toString())
+                    if (code == 401 || code == 403) {
+                        generation += 1
+                        channelState(false)
+                        releaseWake()
+                        refresh("登录已失效", detail, false)
+                        if (!RelayHub.resumed) Notifier.loginExpired(this@RelayService, detail)
+                    } else queueReconnect(gen, detail)
                 }
-                queueReconnect(gen, detail)
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                queueReconnect(gen, reason.ifBlank { "连接已关闭" })
+                handler.post { queueReconnect(gen, reason.ifBlank { "连接已关闭" }) }
             }
+
         })
         socket = opened
-        SocketBus.sender = { text -> if (gen == generation) opened.send(text) }
+        SocketBus.sender = { text ->
+            handler.post {
+                if (gen != generation || userStopped) return@post
+                val msg = try { JSONObject(text) } catch (_: Exception) { return@post }
+                when (msg.optString("type")) {
+                    "mac.select" -> {
+                        selectedMac = msg.optString("id")
+                        prefs().edit().putString(KEY_MAC, selectedMac).apply()
+                    }
+                    "mac.leave" -> {
+                        selectedMac = ""
+                        prefs().edit().remove(KEY_MAC).apply()
+                    }
+                }
+                if (!opened.send(text)) {
+                    opened.cancel()
+                    queueReconnect(gen, "发送失败，正在重新同步")
+                }
+            }
+        }
     }
 
     private fun queueReconnect(gen: Int, reason: String) {
         if (gen != generation || userStopped || reconnectQueued) return
         reconnectQueued = true
-        scheduleReconnect(reason)
+        socket = null
+        SocketBus.sender = null
+        channelState(true)
+        scheduleReconnect(gen, reason)
     }
 
-    private fun scheduleReconnect(reason: String) {
+    private fun scheduleReconnect(gen: Int, reason: String) {
         reconnecting = true
         attempts += 1
         hostOnline = false
         val wait = (1000L shl (attempts - 1).coerceAtMost(4)).coerceAtMost(20_000L)
         refresh("正在重连", reason, true)
         handler.postDelayed({
-            if (!userStopped) connect()
+            if (gen == generation && !userStopped) connect()
         }, wait)
+    }
+
+    private fun channelState(retrying: Boolean) {
+        RelayHub.emit(JSONObject().put("type", "channel.state")
+            .put("connected", false).put("reconnecting", retrying).toString())
     }
 
     private fun handle(text: String) {
@@ -185,10 +247,45 @@ class RelayService : Service() {
         } catch (_: Exception) {
             return
         }
+        if (msg.optString("to").isNotBlank() && msg.optString("to") != selfID) return
         when (msg.optString("type")) {
             "relay.welcome" -> {
-                hostOnline = msg.optBoolean("hostOnline")
-                refresh(if (hostOnline) "电脑在线" else "等待电脑", "通道已连接", false)
+                selfID = msg.optString("self")
+                hostOnline = false
+                if (selectedMac.isNotBlank()) {
+                    socket?.send(JSONObject().put("type", "mac.select").put("id", selectedMac).toString())
+                }
+                refresh("等待电脑", "通道已连接", false)
+            }
+            "macs" -> {
+                val items = msg.optJSONArray("items") ?: JSONArray()
+                if (!hostOnline && selectedMac.isNotBlank() && (0 until items.length()).any {
+                        items.optJSONObject(it)?.optString("id") == selectedMac
+                    }) {
+                    socket?.send(JSONObject().put("type", "mac.select").put("id", selectedMac).toString())
+                }
+            }
+            "mac.selected" -> {
+                selectedMac = msg.optString("id")
+                hostOnline = true
+                hostDownAlerted = false
+                panes.clear()
+                seen.clear()
+                refresh("电脑在线", "正在同步会话", false)
+                socket?.send("""{"type":"sessions.get"}""")
+            }
+            "mac.offline", "mac.left" -> {
+                if (msg.optString("id").isNotBlank() && msg.optString("id") != selectedMac) return
+                hostOnline = false
+                panes.keys.forEach { Notifier.cancelPane(this, it) }
+                panes.clear()
+                seen.clear()
+                if (msg.optString("type") == "mac.left") selectedMac = ""
+                else if (!RelayHub.resumed && !hostDownAlerted) {
+                    hostDownAlerted = true
+                    Notifier.hostDown(this)
+                }
+                refresh("等待电脑", "电脑不在线", false)
             }
             "relay.peer" -> if (msg.optString("role") == "host") {
                 hostOnline = msg.optString("event") == "join"
@@ -283,6 +380,8 @@ class RelayService : Service() {
     private fun shutdown() {
         userStopped = true
         generation += 1
+        channelState(false)
+        hostOnline = false
         handler.removeCallbacksAndMessages(null)
         prefs().edit().putBoolean(KEY_ARMED, false).apply()
         socket?.close(1000, "bye")
@@ -372,6 +471,7 @@ class RelayService : Service() {
     }
 
     private fun client(pin: String): OkHttpClient {
+        transport?.takeIf { transportPin == pin }?.let { return it }
         val trust = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
@@ -388,7 +488,7 @@ class RelayService : Service() {
             .sslSocketFactory(ssl.socketFactory, trust)
             .hostnameVerifier { _, _ -> true }
             .pingInterval(25, TimeUnit.SECONDS)
-            .build()
+            .build().also { transport = it; transportPin = pin }
     }
 
     companion object {
@@ -405,6 +505,7 @@ class RelayService : Service() {
         private const val KEY_TOKEN = "token"
         private const val KEY_PIN = "pin"
         private const val KEY_SESSION = "session"
+        private const val KEY_MAC = "mac"
 
         fun notificationGranted(context: Context): Boolean {
             return if (Build.VERSION.SDK_INT < 33) true

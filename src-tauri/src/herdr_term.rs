@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -127,6 +127,7 @@ pub struct RelayFrame {
 static LINKS: LazyLock<Mutex<HashMap<String, Link>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 static FRAME_SEQ: AtomicU64 = AtomicU64::new(1);
+static FRAME_OVERFLOW: AtomicBool = AtomicBool::new(false);
 static FRAME_TX: LazyLock<Mutex<Option<std::sync::mpsc::SyncSender<RelayFrame>>>> = LazyLock::new(|| Mutex::new(None));
 static RELAY_SUBS: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static CACHE: LazyLock<Mutex<HashMap<String, Vec<RelayFrame>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -138,27 +139,33 @@ pub fn set_frame_sender(tx: Option<std::sync::mpsc::SyncSender<RelayFrame>>) {
     }
 }
 
+pub fn take_frame_overflow() -> bool {
+    FRAME_OVERFLOW.swap(false, Ordering::Relaxed)
+}
+
 fn publish_frame(mut frame: RelayFrame) {
     if frame.seq == 0 {
         frame.seq = FRAME_SEQ.fetch_add(1, Ordering::Relaxed);
     }
     if let Ok(mut cache) = CACHE.lock() {
         let entry = cache.entry(frame.pane_id.clone()).or_default();
-        if frame.full {
+        if frame.full || entry.last().map(|item| item.generation != frame.generation).unwrap_or(false) {
             entry.clear();
         }
         entry.push(frame.clone());
         if entry.len() > 120 {
-            let full_at = entry.iter().rposition(|item| item.full).unwrap_or(0);
-            entry.drain(0..full_at);
-            if entry.len() > 120 {
-                entry.drain(1..entry.len() - 40);
-            }
+            // 删除中间增量会使 ANSI 回放失真，超限后改用现时快照。
+            entry.clear();
         }
+    }
+    if !RELAY_SUBS.lock().map(|subs| subs.contains_key(&frame.pane_id)).unwrap_or(false) {
+        return;
     }
     let tx = FRAME_TX.lock().ok().and_then(|slot| slot.clone());
     if let Some(tx) = tx {
-        let _ = tx.try_send(frame);
+        if let Err(std::sync::mpsc::TrySendError::Full(_)) = tx.try_send(frame) {
+            FRAME_OVERFLOW.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -361,14 +368,13 @@ pub fn relay_subscribe(pane_id: &str) -> Result<(), String> {
     if pane_id.is_empty() {
         return Err("没有 pane".into());
     }
-    if let Ok(mut subs) = RELAY_SUBS.lock() {
-        *subs.entry(pane_id.to_string()).or_insert(0) += 1;
-    }
     let _guard = ATTACH_LOCK.lock().map_err(|_| "终端锁失败".to_string())?;
-    if pane_attached(pane_id) {
-        return Ok(());
+    if !pane_attached(pane_id) {
+        attach_locked(&format!("relay:{pane_id}"), pane_id, 100, 32, None)?;
     }
-    attach_locked(&format!("relay:{pane_id}"), pane_id, 100, 32, None).map(|_| ())
+    let mut subs = RELAY_SUBS.lock().map_err(|_| "订阅锁失败".to_string())?;
+    *subs.entry(pane_id.to_string()).or_insert(0) += 1;
+    Ok(())
 }
 
 pub fn relay_unsubscribe(pane_id: &str) {
@@ -376,6 +382,7 @@ pub fn relay_unsubscribe(pane_id: &str) {
     if pane_id.is_empty() {
         return;
     }
+    let Ok(_guard) = ATTACH_LOCK.lock() else { return; };
     let left = RELAY_SUBS.lock().ok().and_then(|mut subs| {
         let count = subs.get_mut(pane_id)?;
         *count = count.saturating_sub(1);
@@ -386,9 +393,7 @@ pub fn relay_unsubscribe(pane_id: &str) {
         Some(left)
     });
     if left == Some(0) {
-        if let Ok(_guard) = ATTACH_LOCK.lock() {
-            release_label(&format!("relay:{pane_id}"), false);
-        }
+        release_label(&format!("relay:{pane_id}"), false);
     }
 }
 
@@ -588,4 +593,47 @@ pub fn term_detach(window: WebviewWindow) -> Result<(), String> {
 
 pub fn detach_label(label: &str) {
     release_label(label, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(pane: &str, generation: u64, full: bool) -> RelayFrame {
+        RelayFrame { seq: 0, pane_id: pane.into(), generation, full, width: 80, height: 24, bytes: b"frame".to_vec() }
+    }
+
+    #[test]
+    fn replay_never_keeps_a_full_frame_with_missing_deltas() {
+        let pane = "test-cache-history";
+        publish_frame(frame(pane, 1, true));
+        for _ in 0..120 { publish_frame(frame(pane, 1, false)); }
+        assert!(replay(pane).is_empty());
+        publish_frame(frame(pane, 2, true));
+        publish_frame(frame(pane, 2, false));
+        assert_eq!(replay(pane).len(), 2);
+        publish_frame(frame(pane, 3, false));
+        assert_eq!(replay(pane).len(), 1);
+        assert!(!replay(pane)[0].full);
+        CACHE.lock().unwrap().remove(pane);
+    }
+
+    #[test]
+    fn bounded_frame_queue_requests_recovery_instead_of_silent_loss() {
+        let pane = "test-frame-overflow";
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        set_frame_sender(Some(tx));
+        take_frame_overflow();
+        publish_frame(frame(pane, 1, true));
+        assert!(rx.try_recv().is_err(), "没有远程订阅时不应发送本地画面");
+        RELAY_SUBS.lock().unwrap().insert(pane.into(), 1);
+        publish_frame(frame(pane, 1, true));
+        publish_frame(frame(pane, 1, false));
+        assert!(take_frame_overflow());
+        assert!(!take_frame_overflow());
+        assert!(rx.try_recv().is_ok());
+        set_frame_sender(None);
+        RELAY_SUBS.lock().unwrap().remove(pane);
+        CACHE.lock().unwrap().remove(pane);
+    }
 }

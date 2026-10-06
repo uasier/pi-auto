@@ -1,7 +1,7 @@
 {
   "name": "pi-auto",
   "private": true,
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "license": "MIT",
   "scripts": {
@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "tsc --noEmit",
+    "test": "tsc --noEmit && node --test relay/app.test.mjs",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1",
     "tauri:build": "tauri build",
     "tauri:build:mac": "tauri build --bundles app,dmg && node scripts/copy-release.mjs",

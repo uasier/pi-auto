@@ -25,12 +25,12 @@ import (
 var staticEmbed embed.FS
 
 const (
-	maxMessage   = 12 << 20
-	maxDevices   = 8
-	writeWait    = 10 * time.Second
-	pongWait     = 90 * time.Second
-	pingEvery    = 25 * time.Second
-	deviceBurst  = 48
+	maxMessage  = 12 << 20
+	maxDevices  = 8
+	writeWait   = 10 * time.Second
+	pongWait    = 90 * time.Second
+	pingEvery   = 25 * time.Second
+	deviceBurst = 48
 )
 
 func main() {
@@ -229,13 +229,13 @@ func sanitize(raw string, n int) string {
 }
 
 type client struct {
-	conn    *websocket.Conn
-	role    string
-	id      string
-	name    string
-	login   string
-	avatar  string
-	room        *ghRoom
+	conn         *websocket.Conn
+	role         string
+	id           string
+	name         string
+	login        string
+	avatar       string
+	room         *ghRoom
 	macID        string
 	selectedMac  string
 	agentCount   int
@@ -243,11 +243,11 @@ type client struct {
 	lastHerdr    []byte
 	lastState    []byte
 	send         chan []byte
-	done    chan struct{}
-	once    sync.Once
-	mu      sync.Mutex
-	tokens  int
-	stamp   time.Time
+	done         chan struct{}
+	once         sync.Once
+	mu           sync.Mutex
+	tokens       int
+	stamp        time.Time
 }
 
 var clientSeq uint64
@@ -304,13 +304,17 @@ func (c *client) trySend(msg []byte) {
 	case <-c.done:
 	case c.send <- msg:
 	default:
+		// ANSI 增量和控制消息不能静默丢弃，断线后由客户端重新同步。
+		c.shutdown()
 	}
 }
 
 func (c *client) shutdown() {
 	c.once.Do(func() {
 		close(c.done)
-		_ = c.conn.Close()
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
 	})
 }
 

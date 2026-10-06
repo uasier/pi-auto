@@ -8,6 +8,7 @@ let pendingMac = "";
 let pendingTimer = 0;
 let macs = [];
 let socketGen = 0;
+let selfID = "";
 const STATE_LABEL = { idle: "空闲", done: "完成", working: "执行中", blocked: "等待确认", unknown: "未知" };
 
 const $ = (id) => document.getElementById(id);
@@ -16,9 +17,13 @@ const native = () => window.NativeRelay;
 let ws = null;
 let usingNative = false;
 let sessions = [];
+let sessionsLoaded = false;
 let current = "";
 let term = null;
 let lastSeq = 0;
+let lastGeneration = 0;
+let resumePane = null;
+let reconnectAttempts = 0;
 let reconnectTimer = 0;
 let wantConnect = false;
 let filter = "all";
@@ -134,8 +139,9 @@ function renderStatus() {
   if (link.socket === "connecting") return setStatus("正在连接", "wait");
   if (link.socket === "reconnecting") return setStatus("断开，正在重连", "wait");
   if (!link.host && !selectedMac) return setStatus("已登录，请选择一台 Mac", "wait");
-  if (selectedMac && !sessions.length) return setStatus("正在读取这台 Mac 的会话", "wait");
+  if (selectedMac && !sessionsLoaded) return setStatus("正在读取这台 Mac 的会话", "wait");
   if (!link.herdr) return setStatus(link.herdrError || "电脑上的 Herdr 未连接", "bad");
+  if (selectedMac && sessionsLoaded && !sessions.length) return setStatus("这台 Mac 暂无会话", "mute");
   const summary = sessionSummary();
   if (!link.input) return setStatus(summary ? `只读 · ${summary}` : "只读", "mute");
   setStatus(summary || "可输入", "live");
@@ -304,7 +310,7 @@ let sessionSig = "";
 function renderSessions() {
   const host = $("sessions");
   const visible = sessions.filter(matches);
-  const sig = `${filter}|${current}|` + visible.map((item) => `${item.paneId}:${item.agentState}:${item.title}`).join(";");
+  const sig = `${filter}|${current}|${selectedMac}|${sessionsLoaded}|` + visible.map((item) => `${item.paneId}:${item.agentState}:${item.title}`).join(";");
   if (sig === sessionSig) return;
   sessionSig = sig;
   host.replaceChildren();
@@ -312,7 +318,7 @@ function renderSessions() {
   if (!visible.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = sessions.length ? "这个筛选下没有会话" : selectedMac ? "正在读取这台 Mac 的会话" : "先选择一台已登录的 Mac";
+    empty.textContent = sessions.length ? "这个筛选下没有会话" : selectedMac ? (sessionsLoaded ? "这台 Mac 暂无会话" : "正在读取这台 Mac 的会话") : "先选择一台已登录的 Mac";
     host.append(empty);
     paintStage();
     return;
@@ -352,14 +358,16 @@ function paintStage() {
   const item = sessions.find((entry) => entry.paneId === current);
   const empty = $("term-empty");
   if (!item) {
+    const title = !selectedMac ? "选择一台 Mac" : !sessionsLoaded ? "正在读取会话" : sessions.length ? "选择会话" : "暂无会话";
+    const detail = !selectedMac ? "登录后选择已上线的 Mac" : !sessionsLoaded ? "正在等待 Herdr 会话" : sessions.length ? "从列表选择一个会话" : "在 Mac 的 Herdr 中打开一个会话";
     $("pane-kicker").textContent = selectedMac ? "已选择" : "未选择";
-    $("pane-title").textContent = selectedMac ? "正在读取会话" : "选择一台 Mac";
-    $("pane-meta").textContent = selectedMac ? "已连上这台 Mac，正在等待 Herdr 会话" : "登录后从列表选择一台已转发的 Mac";
-    $("pane-state").textContent = selectedMac ? "读取中" : "待选择";
-    $("pane-state").dataset.state = "unknown";
+    $("pane-title").textContent = title;
+    $("pane-meta").textContent = detail;
+    $("pane-state").textContent = selectedMac && !sessionsLoaded ? "读取中" : "待选择";
+    $("term-project").textContent = "";
     empty.classList.remove("hidden");
-    empty.querySelector("strong").textContent = selectedMac ? "正在读取" : "还没有画面";
-    paintPhone(selectedMac ? "正在读取会话" : "选择会话", selectedMac ? "等待这台 Mac 的画面" : "点这里或底部会话", "unknown");
+    empty.querySelector("strong").textContent = title;
+    paintPhone(title, detail, "unknown");
     return;
   }
   empty.classList.add("hidden");
@@ -405,6 +413,7 @@ function selectPane(paneId) {
   if (current && current !== paneId) send({ type: "term.unsubscribe", paneId: current });
   current = paneId;
   lastSeq = 0;
+  lastGeneration = 0;
   ensureTerm().reset();
   send({ type: "term.subscribe", paneId });
   renderSessions();
@@ -433,6 +442,12 @@ function pulse() {
 
 function onFrame(msg) {
   if (msg.paneId !== current) return;
+  if (msg.generation && lastGeneration && msg.generation < lastGeneration) return;
+  if (msg.generation && lastGeneration && msg.generation !== lastGeneration) {
+    lastSeq = 0;
+    ensureTerm().reset();
+  }
+  if (msg.generation) lastGeneration = msg.generation;
   if (typeof msg.seq === "number" && msg.seq > 0 && msg.seq <= lastSeq) return;
   if (typeof msg.seq === "number" && msg.seq > 0) lastSeq = msg.seq;
   const view = ensureTerm();
@@ -441,17 +456,66 @@ function onFrame(msg) {
     scheduleFit();
   }
   if (msg.bytes) {
+    if (msg.full) view.reset();
     view.write(b64ToBytes(msg.bytes));
     pulse();
   }
 }
 
+// 只保留恢复意图，不在断线期间缓存或重放用户输入。
+function clearChannelState(remember = true) {
+  if (remember && selectedMac && current) resumePane = { mac: selectedMac, pane: current };
+  if (!remember) resumePane = null;
+  selectedMac = "";
+  selectedMacName = "";
+  pendingMac = "";
+  window.clearTimeout(pendingTimer);
+  link.host = false;
+  link.input = false;
+  sessions = [];
+  sessionsLoaded = false;
+  current = "";
+  lastSeq = 0;
+  lastGeneration = 0;
+  seen.clear();
+  term?.reset();
+}
+
+function resyncChannel() {
+  const id = selectedMac || pendingMac || localStorage.getItem("herdr-plus-last-mac");
+  if (selectedMac && current) resumePane = { mac: selectedMac, pane: current };
+  current = "";
+  lastSeq = 0;
+  lastGeneration = 0;
+  link.input = false;
+  term?.reset();
+  if (id) chooseMac({ id, name: selectedMacName }, true, true);
+  else void connect();
+}
+
 function onMessage(text) {
   let msg;
   try { msg = JSON.parse(text); } catch { return; }
+  if (msg.to && msg.to !== selfID) return;
+  if (msg.type === "channel.resync") {
+    resyncChannel();
+    return;
+  }
+  if (msg.type === "channel.state") {
+    if (!msg.connected) {
+      clearChannelState();
+      macs = [];
+      link.socket = msg.reconnecting ? "reconnecting" : "off";
+      renderSessions();
+      renderStatus();
+    }
+    return;
+  }
   if (msg.type === "relay.welcome") {
+    selfID = msg.self || "";
+    clearChannelState();
+    reconnectAttempts = 0;
     link.socket = "live";
-    link.host = false;
     if (msg.accountName) paintAccount(msg.accountName);
     if (msg.macs) offerMacs(msg.macs);
     if (!selectedMac) showPicker();
@@ -463,14 +527,21 @@ function onMessage(text) {
     return;
   }
   if (msg.type === "mac.selected") {
+    if (selectedMac === msg.id && current) resumePane = { mac: selectedMac, pane: current };
+    if (resumePane && resumePane.mac !== msg.id) resumePane = null;
     selectedMac = msg.id || "";
     selectedMacName = msg.name || selectedMacName;
     pendingMac = "";
     window.clearTimeout(pendingTimer);
     if (selectedMac) localStorage.setItem("herdr-plus-last-mac", selectedMac);
     link.host = true;
+    link.input = false;
     sessions = [];
+    sessionsLoaded = false;
     current = "";
+    lastSeq = 0;
+    lastGeneration = 0;
+    term?.reset();
     $("pane-title").textContent = msg.name || "Mac";
     $("pane-kicker").textContent = msg.name || "Mac";
     $("pane-meta").textContent = "正在读取会话";
@@ -478,19 +549,19 @@ function onMessage(text) {
     renderSessions();
     paintGate();
     setStatus(msg.name || "已连接", "live");
+    send({ type: "sessions.get" });
     return;
   }
   if (msg.type === "mac.offline" || msg.type === "mac.left") {
-    if (msg.type === "mac.offline") localStorage.removeItem("herdr-plus-last-mac");
-    selectedMac = "";
-    selectedMacName = "";
-    pendingMac = "";
-    link.host = false;
-    sessions = [];
-    current = "";
+    if (msg.id && selectedMac && msg.id !== selectedMac) return;
+    const offline = msg.type === "mac.offline";
+    clearChannelState(offline);
+    if (!offline) localStorage.removeItem("herdr-plus-last-mac");
+    macs = macs.filter((item) => item.id !== msg.id);
     showPicker();
     renderSessions();
-    if (msg.type === "mac.offline") toast("这台 Mac 已离线", true);
+    renderStatus();
+    if (offline) toast("这台 Mac 已离线", true);
     return;
   }
   if (msg.type === "relay.peer" && msg.role === "host") {
@@ -517,6 +588,12 @@ function onMessage(text) {
   }
   if (msg.type === "sessions") {
     sessions = msg.items || [];
+    sessionsLoaded = true;
+    if (resumePane && resumePane.mac === selectedMac) {
+      const pane = resumePane.pane;
+      resumePane = null;
+      if (sessions.some((item) => item.paneId === pane)) selectPane(pane);
+    }
     if (current && !sessions.some((item) => item.paneId === current)) current = "";
     noteStates();
     renderSessions();
@@ -561,7 +638,7 @@ function openChannel(cfg, query) {
     $("settings").classList.add("hidden");
     return;
   }
-  if (ws && ws.readyState === WebSocket.OPEN && ws.__query === query) {
+  if (ws && ws.readyState === WebSocket.OPEN && ws.__query === query && ws.__serverURL === cfg.url) {
     if (selectedMac) send({ type: "mac.select", id: selectedMac });
     return;
   }
@@ -577,16 +654,15 @@ function openChannel(cfg, query) {
   const url = `${cfg.url}${join}${query}`;
   const socket = new WebSocket(url);
   socket.__query = query;
+  socket.__serverURL = cfg.url;
   ws = socket;
   socket.onopen = () => {
-    if (gen !== socketGen) return;
-    link.socket = "live";
-    renderStatus();
+    if (gen !== socketGen || ws !== socket) return;
     $("settings").classList.add("hidden");
-    if (selectedMac) send({ type: "mac.select", id: selectedMac });
-    else if (current) send({ type: "term.subscribe", paneId: current });
   };
-  socket.onmessage = (event) => onMessage(String(event.data));
+  socket.onmessage = (event) => {
+    if (gen === socketGen && ws === socket) onMessage(String(event.data));
+  };
   socket.onerror = () => {
     if (gen !== socketGen) return;
     setStatus("连接失败，浏览器需先信任证书", "bad");
@@ -594,6 +670,9 @@ function openChannel(cfg, query) {
   socket.onclose = () => {
     if (gen !== socketGen) return;
     ws = null;
+    clearChannelState();
+    macs = [];
+    renderSessions();
     if (!wantConnect) {
       link.socket = "off";
       renderStatus();
@@ -601,13 +680,18 @@ function openChannel(cfg, query) {
     }
     link.socket = "reconnecting";
     renderStatus();
-    reconnectTimer = window.setTimeout(connect, 2000);
+    const delay = Math.min(20000, 1000 * (2 ** Math.min(reconnectAttempts++, 5)));
+    reconnectTimer = window.setTimeout(connect, delay);
   };
 }
 
 function disconnect() {
   wantConnect = false;
+  socketGen += 1;
+  reconnectAttempts = 0;
   clearTimeout(reconnectTimer);
+  clearChannelState(false);
+  macs = [];
   link.socket = "off";
   link.host = false;
   if (usingNative && native()) native().disconnect();
@@ -658,6 +742,10 @@ window.__relay = {
     connect();
   },
   openPane(id) { selectPane(id); },
+  onBatch(items) {
+    if (!items) return;
+    for (const item of items) this.onB64(item);
+  },
   onB64(payload) {
     const binary = atob(payload);
     const bytes = new Uint8Array(binary.length);
@@ -770,9 +858,10 @@ function hidePicker() {
 function offerMacs(items) {
   macs = items || [];
   renderMacs();
-  if (selectedMac && macs.some((item) => item.id === selectedMac)) return;
+  if (selectedMac && link.host && macs.some((item) => item.id === selectedMac)) return;
+  if (pendingMac && macs.some((item) => item.id === pendingMac)) return;
   const last = localStorage.getItem("herdr-plus-last-mac") || "";
-  const pick = macs.find((item) => item.id === last) || (macs.length === 1 ? macs[0] : null);
+  const pick = macs.find((item) => item.id === last) || (!last && macs.length === 1 ? macs[0] : null);
   if (pick) {
     chooseMac(pick, true);
     return;
@@ -780,9 +869,11 @@ function offerMacs(items) {
   showPicker();
 }
 
-function chooseMac(mac, quiet = false) {
+function chooseMac(mac, quiet = false, force = false) {
   if (!mac) return;
-  if (mac.id === selectedMac && !pendingMac) {
+  if (!force && mac.id === pendingMac) return;
+  if (resumePane && resumePane.mac !== mac.id) resumePane = null;
+  if (!force && mac.id === selectedMac && !pendingMac && link.host) {
     hidePicker();
     return;
   }
